@@ -15,11 +15,18 @@ reasoning behind non-obvious changes instead of only making them.
   clock styles, leagues) and the validators that keep arguments from becoming other URLs
 - `src/pixelcade_mcp/client.py`: `PixelcadeClient` (one httpx client), hand-built URLs, response parsers,
   `PixelcadeError`
-- `src/pixelcade_mcp/server.py`: MCP tools (`MCPServer` from `mcp` 2.x)
+- `src/pixelcade_mcp/server.py`: MCP tools (`MCPServer` from `mcp` 2.x); every action goes through `_send`,
+  which honors dry run and returns an `ActionResult`
+- `src/pixelcade_mcp/assumptions.py`: every pixelweb behavior relied on, by id, with source and status
+- `src/pixelcade_mcp/doctor.py`: layer-by-layer checks; `STEP` maps layers to HARDWARE_VALIDATION.md steps
+- `src/pixelcade_mcp/sim/fake_pixelweb.py`: wire-level fake pixelweb (real HTTP, raw paths recorded,
+  `routes`/`slow_s`/`drop` faults); used by the tests and `simulate`
+- `src/pixelcade_mcp/logsafe.py`: log redaction, **byte-identical** across the sibling servers
 - `src/pixelcade_mcp/effects.py`: Pulse effect catalog (reference data, not an allow-list)
-- `src/pixelcade_mcp/cli.py`: `serve` (default) and `check`
-- `tests/`: `conftest.py` (`FakePixelweb` on `httpx.MockTransport`, records raw paths), `test_config`,
-  `test_client`, `test_tools` (in-process MCP `Client`), `test_stdio` (installed entry point).
+- `src/pixelcade_mcp/cli.py`: `serve` (default), `doctor` (`check`), `simulate`, `call`
+- `tests/`: `conftest.py` (a `FakePixelweb` per test; `MockPixelweb` on `httpx.MockTransport` only for
+  failures a socket can't produce, like DNS errors), `test_config`, `test_client`, `test_tools` (in-process
+  MCP `Client`, dry run, faults), `test_cli`, `test_assumptions`, `test_logsafe`, `test_stdio`.
   Async tests use anyio's plugin, not pytest-asyncio.
 
 ## Rules for changes
@@ -36,8 +43,16 @@ reasoning behind non-obvious changes instead of only making them.
 - Log to **stderr only**. stdout is the MCP stdio transport.
 - Every tool has a `title`, explicit `ToolAnnotations`, and constrained args via
   `Literal`/`Annotated[..., Field(...)]`. `test_tools.py` enforces this.
+- **Actions go through `_send`** (dry run, then the GET, then an `ActionResult`: `pixelcade`, `outcome`,
+  `detail`, `sent`, `warnings`). Don't call `client().get` from an action tool directly.
+- **Don't invent pixelweb behavior.** Anything not seen on hardware goes in `assumptions.py`, is cited where
+  the code relies on it (`# ASSUMPTION PX-...`), is implemented the same way in `fake_pixelweb.py`, gets a
+  test, a HARDWARE_VALIDATION.md step and a README table row. `tests/test_assumptions.py` fails if they drift.
+- `logsafe.py` is shared: change it in one sibling, copy it to the others.
 
 ## pixelweb facts the code depends on
+
+The authoritative list, with ids and status, is `assumptions.py`; this is the readable summary.
 
 From pixelcade.org/developers and Pixelcade's Batocera hook scripts (github.com/alinke/pixelcade-linux,
 `batocera/scripts/`); **not yet verified on hardware**:
@@ -58,5 +73,7 @@ Unknowns to confirm on the real board: the response format of `/arcade/list`, `/
 
 ```sh
 pip install -e ".[dev]" && pytest && ruff check . && ruff format --check . && mypy
-mcp-server-pixelcade check | (serve)
+mcp-server-pixelcade doctor [--json] | simulate [--write-config DIR] | call <tool> k=v [--dry-run] | (serve [--dry-run])
 ```
+
+Real hardware: `doctor`, then HARDWARE_VALIDATION.md. Record results in `assumptions.py` and the README table.

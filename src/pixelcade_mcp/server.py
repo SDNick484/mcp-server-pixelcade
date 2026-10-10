@@ -31,7 +31,7 @@ from pydantic import Field
 from typing_extensions import TypedDict
 
 from . import config as cfg
-from .client import PixelcadeClient, PixelcadeError, Query, Status, parse_current_game, parse_name_list
+from .client import PixelcadeClient, PixelcadeError, Query, Status, build_path, parse_current_game, parse_name_list
 from .config import ClockStyle, SportsLeague, load_settings
 from .effects import EFFECTS, PATTERNS, EffectCategory
 
@@ -67,7 +67,7 @@ mcp = MCPServer(
         "Call get_status first: it says whether the arcade is reachable, which game is selected, and whether "
         "Pulse strips are configured. The arcade frontend (EmulationStation on Batocera) also drives the marquee: "
         "scrolling to or launching a game replaces whatever you showed, and launching a game stops widgets. "
-        "Use show_current_game to put the frontend's marquee back."
+        "Use show_current_game to put the frontend's marquee back."  # ASSUMPTION PX-FRONTEND
     ),
     lifespan=lifespan,
 )
@@ -90,12 +90,44 @@ def _check(fn: Callable[..., T], *args: object) -> T:
         raise PixelcadeError(str(exc)) from exc
 
 
-def _ack(message: str, body: str) -> str:
-    """Append pixelweb's reply when it says something short and useful."""
-    reply = body.strip()
+# --- What an action returns ---------------------------------------------------------
+# Every tool that changes something returns an ActionResult, the same shape as the
+# sibling servers' (Shield, Onkyo, Batocera...): structured, so a client can read
+# `outcome` and `sent` without parsing prose, with `detail` one sentence for the user.
+# Failures aren't an outcome: they're isError results (PixelcadeError).
+Outcome = Literal["done", "unchanged", "dry_run"]
+
+
+class ActionResult(TypedDict):
+    pixelcade: str  # PIXELCADE_NAME, or pixelweb's address
+    outcome: Outcome
+    detail: str
+    sent: list[str]  # the GETs that went to pixelweb (or, in a dry run, would have)
+    warnings: list[str]
+
+
+def _result(detail: str, sent: list[str], outcome: Outcome = "done") -> ActionResult:
+    settings = client().settings
+    if outcome == "dry_run":
+        detail = f"DRY RUN, nothing sent: {detail}"
+    return ActionResult(
+        pixelcade=settings.name or settings.url,
+        outcome=outcome,
+        detail=detail,
+        sent=sent,
+        warnings=[],
+    )
+
+
+async def _send(segments: list[str], query: Query, detail: str) -> ActionResult:
+    """The one place an action reaches pixelweb: honors dry run, then appends pixelweb's reply if it's short."""
+    sent = [f"GET {build_path(segments, query)}"]
+    if client().settings.dry_run:
+        return _result(detail, sent, "dry_run")
+    reply = (await client().get(segments, query)).strip()
     if reply and len(reply) <= 200 and "\n" not in reply:
-        return f"{message} (pixelweb: {reply})"
-    return message
+        detail = f"{detail} (pixelweb: {reply})"
+    return _result(detail, sent)
 
 
 # --- Reading ---------------------------------------------------------------
@@ -216,7 +248,7 @@ async def show_game_marquee(
         Literal["follow", "skip", "off"],
         Field(description="Pulse LED strips: follow the game's theme, leave them as they are, or turn them off."),
     ] = "follow",
-) -> str:
+) -> ActionResult:
     """Show a game's marquee artwork, the way the frontend does when you scroll to that game.
 
     If the game has no artwork, Pixelcade shows fallback_text if given, otherwise a default marquee.
@@ -232,23 +264,22 @@ async def show_game_marquee(
         query.append(("t", _check(_one_line, fallback_text)))
     if loops is not None:
         # Pixelcade's docs: queued items sent from scripts carry event=FEScroll.
-        query += [("l", loops), ("event", "FEScroll")]
+        query += [("l", loops), ("event", "FEScroll")]  # ASSUMPTION PX-QUEUE
     query += _pulse_flags(pulse)
-    body = await client().get(["arcade", "stream", s, r], query)
     verb = f"Queued {s}/{r} for {loops}" if loops else f"Showing {s}/{r}"
-    return _ack(verb, body)
+    return await _send(["arcade", "stream", s, r], query, verb)
 
 
 @mcp.tool(title="Show a system marquee", annotations=_SET)
-async def show_console_marquee(system: System, fallback_text: FallbackText = None) -> str:
+async def show_console_marquee(system: System, fallback_text: FallbackText = None) -> ActionResult:
     """Show a system/console marquee (e.g. 'snes', 'genesis', 'mame'), as when browsing the system list."""
     s = _check(cfg.path_segment, system, "system", 60)
     query: Query = [("t", _check(_one_line, fallback_text))] if fallback_text else []
-    return _ack(f"Showing the {s} system marquee", await client().get(["console", "stream", s], query))
+    return await _send(["console", "stream", s], query, f"Showing the {s} system marquee")
 
 
 @mcp.tool(title="Restore the frontend's marquee", annotations=_SET)
-async def show_current_game() -> str:
+async def show_current_game() -> ActionResult:
     """Put back the marquee for the game currently selected in the arcade frontend, e.g. after showing text."""
     c = client()
     game = parse_current_game(await c.get(["currentgame"]))
@@ -256,8 +287,7 @@ async def show_current_game() -> str:
         raise PixelcadeError(
             "No game has been selected in the frontend since pixelweb started, so there is nothing to restore."
         )
-    body = await c.get(["arcade", "stream", game["system"], game["rom"]])
-    return _ack(f"Showing {game['system']}/{game['rom']}", body)
+    return await _send(["arcade", "stream", game["system"], game["rom"]], [], f"Showing {game['system']}/{game['rom']}")
 
 
 def _one_line(text: str) -> str:
@@ -266,6 +296,7 @@ def _one_line(text: str) -> str:
     return text.strip()
 
 
+# ASSUMPTION PX-TEXT: line breaks are the literal two characters \\n.
 def _marquee_text(text: str) -> str:
     """Real newlines -> the literal two characters backslash-n, which is how pixelweb takes line breaks."""
     lines = text.replace("\r\n", "\n").split("\n")
@@ -312,7 +343,7 @@ async def show_text(
         Field(default=None, ge=100, le=5000, description="Blink interval in ms. Only for 9 characters or fewer."),
     ] = None,
     left_justify: bool = False,
-) -> str:
+) -> ActionResult:
     """Show a message on the marquee, e.g. 'GAME NIGHT 7PM' or a high score."""
     t = _check(_marquee_text, text)
     if not t.replace("\\n", "").strip():
@@ -334,7 +365,7 @@ async def show_text(
         query.append(("blink", blink_ms))
     if left_justify:
         query.append(("left", "true"))
-    return _ack("Showing the text", await client().get(["text"], query))
+    return await _send(["text"], query, "Showing the text")
 
 
 @mcp.tool(title="Play an animation", annotations=_ACT)
@@ -344,11 +375,11 @@ async def play_animation(
         int | None,
         Field(default=None, ge=1, le=50, description="Queue it and play this many times; omit to play now."),
     ] = None,
-) -> str:
+) -> ActionResult:
     """Play one of Pixelcade's built-in animations on the marquee (see list_artwork kind='animations')."""
     n = _check(cfg.path_segment, name, "animation name", 100)
     query: Query = [("l", loops)] if loops else []
-    return _ack(f"Playing animation {n}", await client().get(["animations", "stream", n], query))
+    return await _send(["animations", "stream", n], query, f"Playing animation {n}")
 
 
 @mcp.tool(title="Show a widget", annotations=_SET)
@@ -379,7 +410,7 @@ async def show_widget(
         bool,
         Field(description="Keep it up until stop_widgets (or a game launch), ignoring frontend scrolling."),
     ] = False,
-) -> str:
+) -> ActionResult:
     """Show a live widget on the marquee: a clock (optionally arcade-themed), weather, a stock ticker,
     sports scores, or the attract-mode playlist. Widgets keep running until replaced; stop_widgets ends them.
     """
@@ -389,6 +420,7 @@ async def show_widget(
     if stray:
         raise PixelcadeError(f"{', '.join(stray)} doesn't apply to the {widget} widget.")
 
+    # ASSUMPTION PX-WIDGETS
     query: list[tuple[str, str | int | None]] = [("nointerrupt", None)] if lock else []
     path: list[str] = [widget]
     if widget == "clock":
@@ -404,19 +436,19 @@ async def show_widget(
             path.append(league)
         if teams:
             query.append(("teams", _check(cfg.teams, teams)))
-    return _ack(f"Showing the {widget} widget", await client().get(path, query))
+    return await _send(path, query, f"Showing the {widget} widget")
 
 
 @mcp.tool(title="Stop widgets", annotations=_SET)
-async def stop_widgets() -> str:
+async def stop_widgets() -> ActionResult:
     """Stop any running widget or attract mode and return the marquee to normal arcade mode."""
-    return _ack("Stopped widgets", await client().get(["attract", "stop"]))
+    return await _send(["attract", "stop"], [], "Stopped widgets")
 
 
 @mcp.tool(title="Blank the marquee", annotations=_SET)
-async def blank_display() -> str:
+async def blank_display() -> ActionResult:
     """Turn the marquee black (it stays on; the next marquee or text replaces the black screen)."""
-    return _ack("The marquee is blank", await client().get(["arcade", "stream", "black", "dummy"]))
+    return await _send(["arcade", "stream", "black", "dummy"], [], "The marquee is blank")
 
 
 # --- Pulse LED strips, rings and matrices ------------------------------------
@@ -431,6 +463,7 @@ Zone = Annotated[
 ]
 
 
+# ASSUMPTION PX-POWER: why there's a cap at all.
 def _within_cap(value: int, what: str) -> None:
     cap = client().settings.pulse_max_brightness
     if value > cap:
@@ -456,7 +489,7 @@ async def pulse_effect(
     loops: Annotated[int | None, Field(default=None, ge=0, le=100, description="0 repeats forever.")] = None,
     duration_s: Annotated[int | None, Field(default=None, ge=1, le=3600, description="Stop after this long.")] = None,
     reverse: bool = False,
-) -> str:
+) -> ActionResult:
     """Run a lighting effect on one Pixelcade Pulse zone, e.g. 'rainbow' on left_strip or 'fire' on center_matrix.
     Colors are optional; many effects have their own palette.
     """
@@ -478,35 +511,35 @@ async def pulse_effect(
         query.append(("duration", duration_s))
     if reverse:
         query.append(("reverse", "true"))
-    return _ack(f"Running {e} on {z}", await client().get(["ledstrip", "zone", z, "effect", e], query))
+    return await _send(["ledstrip", "zone", z, "effect", e], query, f"Running {e} on {z}")
 
 
 @mcp.tool(title="Fill a Pulse zone with a color", annotations=_SET)
 async def pulse_fill(
     zone: Zone,
     color: Annotated[str, Field(min_length=3, max_length=9, description="A color name or 6-digit hex.")],
-) -> str:
+) -> ActionResult:
     """Set every LED in a Pulse zone to one solid color (stops any effect running there)."""
     z = _check(cfg.zone_id, zone)
     r, g, b = _check(cfg.rgb, color)
-    return _ack(f"Filled {z}", await client().get(["ledstrip", "zone", z, "flood"], [("r", r), ("g", g), ("b", b)]))
+    return await _send(["ledstrip", "zone", z, "flood"], [("r", r), ("g", g), ("b", b)], f"Filled {z}")
 
 
 @mcp.tool(title="Turn Pulse LEDs off", annotations=_SET)
 async def pulse_clear(
     zone: Annotated[str | None, Field(default=None, max_length=20, description="One zone; omit for all LEDs.")] = None,
-) -> str:
+) -> ActionResult:
     """Turn off Pulse LEDs and stop their effects: one zone, or everything if no zone is given."""
     if zone is None:
-        return _ack("All Pulse LEDs are off", await client().get(["ledstrip", "clear"]))
+        return await _send(["ledstrip", "clear"], [], "All Pulse LEDs are off")
     z = _check(cfg.zone_id, zone)
-    return _ack(f"{z} is off", await client().get(["ledstrip", z, "clear"]))
+    return await _send(["ledstrip", z, "clear"], [], f"{z} is off")  # ASSUMPTION PX-ZONES: no zone/ segment
 
 
 @mcp.tool(title="Set Pulse brightness", annotations=_SET)
 async def set_pulse_brightness(
     level: Annotated[int, Field(ge=0, le=255, description="0-255, limited by the server's cap (see get_status).")],
-) -> str:
+) -> ActionResult:
     """Set the overall brightness of all Pulse LEDs."""
     _within_cap(level, "Brightness")
-    return _ack(f"Pulse brightness set to {level}", await client().get(["ledstrip", "brightness", str(level)]))
+    return await _send(["ledstrip", "brightness", str(level)], [], f"Pulse brightness set to {level}")

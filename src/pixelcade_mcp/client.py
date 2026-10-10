@@ -47,6 +47,7 @@ def encode(value: str) -> str:
     return quote(value, safe="")
 
 
+# ASSUMPTION PX-GET-API: GETs, bare-flag options, %20 for spaces (as the hook scripts send).
 def build_path(segments: Sequence[str], query: Query = ()) -> str:
     path = "/" + "/".join(encode(s) for s in segments)
     parts = []
@@ -71,6 +72,7 @@ class Pulse(TypedDict):
 
 class Status(TypedDict):
     url: str
+    dry_run: bool
     reachable: bool
     error: str | None
     name: str | None
@@ -83,6 +85,7 @@ class Status(TypedDict):
     pulse: Pulse
 
 
+# ASSUMPTION PX-CURRENTGAME
 def parse_current_game(body: str) -> CurrentGame | None:
     """``/currentgame`` -> {system, rom}.
 
@@ -99,6 +102,7 @@ def parse_current_game(body: str) -> CurrentGame | None:
     return None
 
 
+# ASSUMPTION PX-LISTS: the format isn't documented, so this is deliberately tolerant.
 def parse_name_list(body: str) -> list[str]:
     """The list endpoints' format isn't documented, so take what comes:
     a JSON array, a JSON object whose values (or keys) are names, or plain
@@ -172,7 +176,7 @@ class PixelcadeClient:
         body = resp.text
         if resp.status_code >= 400:
             snippet = body.strip()[:300] or resp.reason_phrase
-            if resp.status_code == 404:
+            if resp.status_code == 404:  # ASSUMPTION PX-REPLIES
                 raise PixelcadeError(
                     f"pixelweb at {url} has no {path.split('?')[0]} endpoint ({snippet}). "
                     "Pixelcade may need updating (re-run the Pixelcade installer on the arcade)."
@@ -195,10 +199,11 @@ class PixelcadeClient:
         "it's off" is itself the answer the model needs."""
         cap = self.settings.pulse_max_brightness
         try:
-            info = await self.get_json(["info"])
+            info = await self.get_json(["info"])  # ASSUMPTION PX-INFO
         except PixelcadeError as exc:
             return Status(
                 url=self.settings.url,
+                dry_run=self.settings.dry_run,
                 reachable=False,
                 error=str(exc),
                 name=None,
@@ -222,6 +227,7 @@ class PixelcadeClient:
         if enabled:
             # /info's brightness is pixelweb's setting; this one is read from the board.
             try:
+                # ASSUMPTION PX-BRIGHTNESS
                 live = (await self.get_json(["ledstrip", "getbrightness"])).get("brightness")
                 if isinstance(live, int):
                     brightness = live
@@ -230,6 +236,7 @@ class PixelcadeClient:
 
         return Status(
             url=self.settings.url,
+            dry_run=self.settings.dry_run,
             reachable=True,
             error=None,
             name=_str(info, "name"),

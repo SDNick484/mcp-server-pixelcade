@@ -28,7 +28,7 @@ def test_build_path_encodes_query_values():
 
 
 async def test_httpx_sends_the_path_unchanged(settings, fake):
-    c = PixelcadeClient(settings, transport=fake.transport)
+    c = PixelcadeClient(settings)
     try:
         await c.get(["arcade", "stream", "mame", "a/b c"], [("t", "x y")])
     finally:
@@ -67,47 +67,47 @@ def test_parse_name_list(body, expected):
 
 
 # --- Errors ------------------------------------------------------------------
-async def _get(settings, fake):
-    c = PixelcadeClient(settings, transport=fake.transport)
+async def _get(settings, transport=None):
+    c = PixelcadeClient(settings, transport=transport)
     try:
         return await c.get(["text"], [("t", "hi")])
     finally:
         await c.aclose()
 
 
-async def test_connection_refused_says_what_to_check(settings, fake):
-    fake.error = lambda r: httpx.ConnectError("[Errno 111] Connection refused", request=r)
+async def test_connection_refused_says_what_to_check(mock_settings, mock):
+    mock.error = lambda r: httpx.ConnectError("[Errno 111] Connection refused", request=r)
     with pytest.raises(PixelcadeError, match="pixelweb isn't answering at http://arcade.test:8080"):
-        await _get(settings, fake)
+        await _get(mock_settings, mock.transport)
 
 
-async def test_unresolvable_host_suggests_an_ip(settings, fake):
-    fake.error = lambda r: httpx.ConnectError("[Errno -2] Name or service not known", request=r)
+async def test_unresolvable_host_suggests_an_ip(mock_settings, mock):
+    mock.error = lambda r: httpx.ConnectError("[Errno -2] Name or service not known", request=r)
     with pytest.raises(PixelcadeError, match="Can't resolve arcade.test.*PIXELCADE_URL"):
-        await _get(settings, fake)
+        await _get(mock_settings, mock.transport)
 
 
-async def test_timeout(settings, fake):
-    fake.error = lambda r: httpx.ReadTimeout("timed out", request=r)
+async def test_timeout(mock_settings, mock):
+    mock.error = lambda r: httpx.ReadTimeout("timed out", request=r)
     with pytest.raises(PixelcadeError, match="didn't answer within 2s"):
-        await _get(settings, fake)
+        await _get(mock_settings, mock.transport)
 
 
 async def test_missing_endpoint_suggests_updating(settings, fake):
     fake.routes["/text"] = (404, "404 page not found")
     with pytest.raises(PixelcadeError, match="no /text endpoint.*updating"):
-        await _get(settings, fake)
+        await _get(settings)
 
 
 async def test_server_error_passes_the_reason_on(settings, fake):
     fake.routes["/text"] = (500, "Write in progress")
     with pytest.raises(PixelcadeError, match="500: Write in progress"):
-        await _get(settings, fake)
+        await _get(settings)
 
 
 # --- status() ------------------------------------------------------------------
 async def test_status(settings, fake):
-    c = PixelcadeClient(settings, transport=fake.transport)
+    c = PixelcadeClient(settings)
     try:
         s = await c.status()
     finally:
@@ -120,7 +120,7 @@ async def test_status(settings, fake):
 
 async def test_status_without_strips_skips_the_board_query(settings, fake):
     fake.routes["/info"] = (200, '{"type": "LED", "v2board": true, "ledStrip": false}')
-    c = PixelcadeClient(settings, transport=fake.transport)
+    c = PixelcadeClient(settings)
     try:
         s = await c.status()
     finally:
@@ -129,9 +129,9 @@ async def test_status_without_strips_skips_the_board_query(settings, fake):
     assert "/ledstrip/getbrightness" not in fake.requests
 
 
-async def test_status_when_unreachable_reports_instead_of_raising(settings, fake):
-    fake.error = lambda r: httpx.ConnectError("Connection refused", request=r)
-    c = PixelcadeClient(settings, transport=fake.transport)
+async def test_status_when_unreachable_reports_instead_of_raising(mock_settings, mock):
+    mock.error = lambda r: httpx.ConnectError("Connection refused", request=r)
+    c = PixelcadeClient(mock_settings, transport=mock.transport)
     try:
         s = await c.status()
     finally:

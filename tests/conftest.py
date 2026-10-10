@@ -1,4 +1,8 @@
-"""Shared fixtures. Tests run against a fake pixelweb: no arcade (or network) needed."""
+"""Shared fixtures. Tests talk to the wire-level fake pixelweb (sim/fake_pixelweb.py) over real HTTP.
+
+A few client tests need failures a real socket can't produce on demand (DNS errors); those use
+`mock`, an httpx.MockTransport stand-in.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ import httpx
 import pytest
 
 from pixelcade_mcp.config import Settings
+from pixelcade_mcp.sim.fake_pixelweb import FakePixelweb
 
 # What a real V2 LED marquee's /info looks like (trimmed from Pixelcade's API reference).
 INFO = {
@@ -35,8 +40,8 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-class FakePixelweb:
-    """Stands in for pixelweb behind an httpx.MockTransport.
+class MockPixelweb:
+    """Stands in for pixelweb behind an httpx.MockTransport, for failures that need injecting.
 
     It records each request's *raw* path (exactly what went on the wire, with
     its percent-encoding), because the encoding is the part most likely to be
@@ -68,18 +73,35 @@ class FakePixelweb:
 
 
 @pytest.fixture
-def fake() -> FakePixelweb:
-    return FakePixelweb()
+def mock() -> MockPixelweb:
+    return MockPixelweb()
 
 
 @pytest.fixture
-def settings() -> Settings:
+def mock_settings() -> Settings:
     return Settings(url="http://arcade.test:8080", timeout_s=2.0, pulse_max_brightness=128)
+
+
+@pytest.fixture
+def fake():
+    with FakePixelweb() as f:
+        yield f
+
+
+@pytest.fixture
+def settings(fake) -> Settings:
+    return Settings(url=fake.url, timeout_s=2.0, pulse_max_brightness=128, name="Test marquee")
 
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
     """Never read the user's real config or environment."""
     monkeypatch.setenv("PIXELCADE_CONFIG_DIR", str(tmp_path))
-    for var in ("PIXELCADE_URL", "PIXELCADE_PULSE_MAX_BRIGHTNESS", "PIXELCADE_TIMEOUT"):
+    for var in (
+        "PIXELCADE_URL",
+        "PIXELCADE_PULSE_MAX_BRIGHTNESS",
+        "PIXELCADE_TIMEOUT",
+        "PIXELCADE_DRY_RUN",
+        "PIXELCADE_NAME",
+    ):
         monkeypatch.delenv(var, raising=False)
