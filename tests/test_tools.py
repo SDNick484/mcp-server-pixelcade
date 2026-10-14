@@ -7,11 +7,12 @@ requests that reach pixelweb.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from mcp import Client
 
 from pixelcade_mcp import server
-from pixelcade_mcp.client import PixelcadeClient
 
 pytestmark = pytest.mark.anyio
 
@@ -38,7 +39,6 @@ ALL_TOOLS = {
 async def mcp_client(settings, fake, monkeypatch):
     # The lifespan builds the client from load_settings(); swap in the fake transport and test settings.
     monkeypatch.setattr(server, "load_settings", lambda: settings)
-    monkeypatch.setattr(server, "PixelcadeClient", lambda s: PixelcadeClient(s, transport=fake.transport))
     async with Client(server.mcp) as c:
         yield c
 
@@ -137,7 +137,7 @@ async def test_show_console_marquee(mcp_client, fake):
 
 async def test_show_current_game(mcp_client, fake):
     r = await call(mcp_client, "show_current_game")
-    assert text(r).startswith("Showing mame/digdug")
+    assert r.structured_content["detail"] == "Showing mame/digdug (pixelweb: OK)"
     assert fake.requests == ["/currentgame", "/arcade/stream/mame/digdug"]
 
 
@@ -240,9 +240,79 @@ async def test_pulse_refuses_unknown_zones(mcp_client, fake, zone):
 
 
 # --- Unreachable ---------------------------------------------------------------
-async def test_unreachable_pixelweb_explains_itself(mcp_client, fake):
-    import httpx
+async def test_unreachable_pixelweb_explains_itself(settings, monkeypatch):
+    monkeypatch.setattr(server, "load_settings", lambda: dataclasses.replace(settings, url="http://127.0.0.1:9"))
+    async with Client(server.mcp) as c:
+        r = await c.call_tool("show_text", {"text": "hi"})
+        assert r.is_error and "pixelweb isn't answering at http://127.0.0.1:9" in text(r)
+        s = (await c.call_tool("get_status", {})).structured_content
+        assert s["reachable"] is False
 
-    fake.error = lambda r: httpx.ConnectError("Connection refused", request=r)
-    r = await call(mcp_client, "show_text", text="hi")
-    assert r.is_error and "pixelweb isn't answering at http://arcade.test:8080" in text(r)
+
+# --- ActionResult and dry run ------------------------------------------------------------------
+ACTIONS = {
+    "show_game_marquee", "show_console_marquee", "show_current_game", "show_text", "play_animation",
+    "show_widget", "stop_widgets", "blank_display", "pulse_effect", "pulse_fill", "pulse_clear",
+    "set_pulse_brightness",
+}  # fmt: skip
+
+
+async def test_every_action_returns_an_action_result(mcp_client):
+    t = await tools(mcp_client)
+    assert ACTIONS | {"get_status", "list_artwork", "list_pulse_effects"} == set(t)
+    for name in ACTIONS:
+        assert set(t[name].output_schema["required"]) == {"pixelcade", "outcome", "detail", "sent", "warnings"}, name
+
+
+async def test_action_result(mcp_client, fake):
+    r = (await call(mcp_client, "show_text", text="HI", color="green")).structured_content
+    assert r == {
+        "pixelcade": "Test marquee",
+        "outcome": "done",
+        "detail": "Showing the text (pixelweb: OK)",
+        "sent": ["GET /text?t=HI&c=green"],
+        "warnings": [],
+    }
+
+
+@pytest.fixture
+async def dry_client(settings, monkeypatch):
+    monkeypatch.setattr(server, "load_settings", lambda: dataclasses.replace(settings, dry_run=True))
+    async with Client(server.mcp) as c:
+        yield c
+
+
+async def test_dry_run_reads_but_sends_nothing(dry_client, fake):
+    assert (await call(dry_client, "get_status")).structured_content["dry_run"] is True
+    r = (await call(dry_client, "show_game_marquee", system="mame", rom="galaga")).structured_content
+    assert (r["outcome"], r["sent"]) == ("dry_run", ["GET /arcade/stream/mame/galaga"])
+    assert r["detail"].startswith("DRY RUN, nothing sent:")
+    for tool, args in [
+        ("show_text", {"text": "x"}), ("show_console_marquee", {"system": "snes"}), ("show_current_game", {}),
+        ("play_animation", {"name": "0rain"}), ("show_widget", {"widget": "clock"}), ("stop_widgets", {}),
+        ("blank_display", {}), ("pulse_effect", {"zone": "left_strip", "effect": "fire"}),
+        ("pulse_fill", {"zone": "0", "color": "red"}), ("pulse_clear", {}), ("set_pulse_brightness", {"level": 10}),
+    ]:  # fmt: skip
+        assert (await call(dry_client, tool, **args)).structured_content["outcome"] == "dry_run", tool
+    reads = {"/info", "/currentgame", "/ledstrip/getbrightness"}
+    assert [p for p in fake.requests if p.split("?")[0] not in reads] == []
+
+
+# --- Faults ------------------------------------------------------------------------------------
+async def test_slow_pixelweb_times_out_with_advice(mcp_client, fake):
+    fake.slow_s = 2.5  # longer than the 2 s test timeout
+    r = await call(mcp_client, "blank_display")
+    assert r.is_error and "didn't answer within 2s" in text(r)
+
+
+async def test_dropped_connection_is_an_error_not_a_crash(mcp_client, fake):
+    fake.drop = True
+    r = await call(mcp_client, "stop_widgets")
+    assert r.is_error and "pixelweb" in text(r)
+
+
+async def test_unknown_endpoint_suggests_updating(mcp_client, fake):
+    # ASSUMPTION PX-REPLIES: an older pixelweb without an endpoint answers 404
+    fake.routes["/attract/stop"] = (404, "404 page not found")
+    r = await call(mcp_client, "stop_widgets")
+    assert r.is_error and "updating" in text(r)

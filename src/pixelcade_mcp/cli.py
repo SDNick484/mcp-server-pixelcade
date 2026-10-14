@@ -1,61 +1,159 @@
-"""Entry point: `mcp-server-pixelcade` (serve over stdio) and `mcp-server-pixelcade check`."""
+"""mcp-server-pixelcade: an MCP server for a Pixelcade LED marquee.
+
+Commands:
+  serve      run the MCP server over stdio (the default)
+  doctor     check every layer between here and pixelweb (`check` is an alias)
+  simulate   run a fake pixelweb to try things without one
+  call       call one tool exactly as the model would, and print the result
+"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import json
 import logging
+import os
 import sys
+from pathlib import Path
 
 from . import __version__
-from .client import PixelcadeClient
-from .config import load_settings
+from .config import flag, load_settings
+from .logsafe import setup_logging
 
 
-def _setup_logging() -> None:
-    # stdout belongs to the MCP stdio transport; logs must go to stderr.
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
-    # httpx logs every request at INFO, duplicating our own "GET /path" lines.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+def _setup_logging(args: argparse.Namespace) -> None:
+    """stderr only (stdout belongs to the MCP stdio transport), redacted: LAN addresses are masked
+    unless --no-redact / PIXELCADE_LOG_UNREDACTED=1; tokens and passwords always are."""
+    debug = getattr(args, "debug", False) or flag(os.environ.get("PIXELCADE_DEBUG"))
+    # The server logs each request at INFO; for one-shot commands that's noise next to their output.
+    quiet = args.cmd in ("doctor", "check", "call", "simulate")
+    level = logging.DEBUG if debug else (logging.WARNING if quiet else logging.INFO)
+    setup_logging(level, redacted=not _unredacted(args))
+    if not debug:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-async def _cmd_check() -> int:
-    """Ask pixelweb for /info, so setup problems show up before an MCP client is involved."""
-    settings = load_settings()
-    client = PixelcadeClient(settings)
+def _unredacted(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "no_redact", False)) or flag(os.environ.get("PIXELCADE_LOG_UNREDACTED"))
+
+
+async def _cmd_doctor(args: argparse.Namespace) -> int:
+    from .doctor import render, run_doctor, to_json
+
+    report = await run_doctor(load_settings(), timeout=args.timeout)
+    redacted = not _unredacted(args)
+    print(to_json(report, redacted) if args.json else render(report, redacted))
+    return 0 if report.ok else 1
+
+
+async def _cmd_simulate(args: argparse.Namespace) -> int:
+    from .sim.fake_pixelweb import FakePixelweb
+
+    fake = FakePixelweb(port=args.port)
+    # Echo each request, so you can see what a tool call would put on the marquee.
+    fake.on_request = lambda raw: print(f"  pixelweb <- GET {raw}", flush=True)
+    fake.start()
+    print(f"Simulated pixelweb: {fake.url} (V2 LED marquee, 90 Pulse LEDs, frontend on mame/digdug)")
+    if args.write_config:
+        d = Path(args.write_config)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "config.json").write_text(json.dumps({"url": fake.url, "name": "Simulated Pixelcade"}, indent=2))
+        print(f"\nWrote {d / 'config.json'}. In another terminal:\n  export PIXELCADE_CONFIG_DIR={d}")
+    else:
+        print(f"\nIn another terminal:\n  export PIXELCADE_URL={fake.url}")
+    print('  mcp-server-pixelcade doctor\n  mcp-server-pixelcade call show_text text="GAME NIGHT" color=cyan')
+    print("\nRequests show up below. Ctrl+C to stop.\n")
     try:
-        status = await client.status()
+        while True:
+            await asyncio.sleep(3600)
     finally:
-        await client.aclose()
-    print(f"pixelweb URL:   {status['url']}")
-    if not status["reachable"]:
-        print(f"Not reachable:  {status['error']}")
+        fake.stop()
+
+
+def _parse_args(raw_args: list[str]) -> dict[str, object] | None:
+    out: dict[str, object] = {}
+    for pair in raw_args:
+        key, sep, raw = pair.partition("=")
+        if not sep:
+            print(f"arguments are key=value, got {pair!r}", file=sys.stderr)
+            return None
+        try:
+            out[key] = json.loads(raw)  # lock=true -> True, loops=3 -> 3
+        except json.JSONDecodeError:
+            out[key] = raw  # text=hello -> a string
+    return out
+
+
+async def _cmd_call(tool: str, raw_args: list[str]) -> int:
+    """One tool call through the real MCP layer, as the model would make it."""
+    from mcp import Client
+
+    from .server import mcp
+
+    tool_args = _parse_args(raw_args)
+    if tool_args is None:
+        return 2
+    async with Client(mcp) as c:
+        if tool == "tools":
+            for t in (await c.list_tools()).tools:
+                print(f"{t.name:<16} {(t.description or '').splitlines()[0]}")
+            return 0
+        result = await c.call_tool(tool, tool_args)
+    if result.is_error:
+        print(" ".join(getattr(part, "text", "") for part in result.content) or "error", file=sys.stderr)
         return 1
-    print(f"Display:        {status['name'] or '?'} ({status['type'] or '?'}, {status['resolution'] or '?'})")
-    print(f"V2 board:       {status['v2_board']}   firmware {status['firmware']}")
-    print(f"Pixelcade:      {status['software_version']}")
-    game = status["current_game"]
-    print(f"Selected game:  {game['system'] + '/' + game['rom'] if game else '(none yet)'}")
-    pulse = status["pulse"]
-    print(
-        f"Pulse strips:   enabled={pulse['enabled']} pixels={pulse['pixels']} "
-        f"brightness={pulse['brightness']} (server cap {pulse['max_brightness']})"
-    )
+    body = result.structured_content
+    if isinstance(body, dict) and set(body) == {"result"}:
+        body = body["result"]
+    print(json.dumps(body, indent=2, ensure_ascii=False))
     return 0
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="mcp-server-pixelcade", description=__doc__)
-    sub = parser.add_subparsers(dest="cmd")
-    sub.add_parser("serve", help="run the MCP server over stdio (default)")
-    sub.add_parser("check", help="check that pixelweb answers, and print what it reports")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="mcp-server-pixelcade", description=__doc__.split("\n\n")[0])
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    args = parser.parse_args()
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--debug", action="store_true", help="debug logging (PIXELCADE_DEBUG=1)")
+    common.add_argument(
+        "--no-redact",
+        action="store_true",
+        help="show LAN addresses in logs and doctor output (PIXELCADE_LOG_UNREDACTED=1); secrets stay hidden",
+    )
+    sub = parser.add_subparsers(dest="cmd")
+    serve = sub.add_parser("serve", parents=[common], help="run the MCP server over stdio (default)")
+    serve.add_argument("--dry-run", action="store_true", help="read pixelweb, change nothing (PIXELCADE_DRY_RUN=1)")
+    for name in ("doctor", "check"):
+        doc = sub.add_parser(name, parents=[common], help="check every layer between here and pixelweb")
+        doc.add_argument("--json", action="store_true")
+        doc.add_argument("--timeout", type=float, default=5.0)
+    sim = sub.add_parser("simulate", parents=[common], help="run a fake pixelweb to try things without one")
+    sim.add_argument("--port", type=int, default=0, help="port to listen on (default: any free one)")
+    sim.add_argument("--write-config", metavar="DIR", help="write a config.json pointing at the fake to DIR")
+    cal = sub.add_parser("call", parents=[common], help="call one tool as the model would; `call tools` lists them")
+    cal.add_argument("tool")
+    cal.add_argument("args", nargs="*", help="key=value (values are JSON when they parse: loops=3 lock=true)")
+    cal.add_argument("--dry-run", action="store_true", help="change nothing")
+    return parser
 
-    if args.cmd == "check":
-        sys.exit(asyncio.run(_cmd_check()))
 
-    _setup_logging()
-    from .server import mcp  # imported late: `check` doesn't need the server code
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    _setup_logging(args)
+    if getattr(args, "dry_run", False):
+        os.environ["PIXELCADE_DRY_RUN"] = "1"  # read by load_settings() in the server's lifespan
+
+    if args.cmd in ("doctor", "check"):
+        sys.exit(asyncio.run(_cmd_doctor(args)))
+    if args.cmd == "simulate":
+        with contextlib.suppress(KeyboardInterrupt):
+            sys.exit(asyncio.run(_cmd_simulate(args)))
+        sys.exit(0)
+    if args.cmd == "call":
+        sys.exit(asyncio.run(_cmd_call(args.tool, args.args)))
+
+    from .server import mcp  # imported late: doctor and simulate don't need the server code
 
     mcp.run()

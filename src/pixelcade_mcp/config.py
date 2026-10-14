@@ -247,6 +247,10 @@ class Settings:
     url: str
     timeout_s: float = DEFAULT_TIMEOUT_S
     pulse_max_brightness: int = DEFAULT_PULSE_MAX_BRIGHTNESS
+    # Read pixelweb, change nothing: actions report the GET they would send.
+    dry_run: bool = False
+    # How results name the marquee; defaults to pixelweb's URL.
+    name: str | None = None
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -284,7 +288,11 @@ def _int(value: Any, default: int, lo: int, hi: int, name: str) -> int:
     return n
 
 
-def load_settings() -> Settings:
+def flag(value: object) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def load_settings(dry_run: bool | None = None) -> Settings:
     data = _read_json(config_dir() / "config.json")
     url = os.environ.get("PIXELCADE_URL") or data.get("url") or DEFAULT_URL
     cap = _int(
@@ -301,4 +309,13 @@ def load_settings() -> Settings:
             timeout = min(max(float(raw_timeout), 1.0), 60.0)
         except (TypeError, ValueError):
             log.warning("Ignoring timeout %r: not a number", raw_timeout)
-    return Settings(url=normalize_url(str(url)), timeout_s=timeout, pulse_max_brightness=cap)
+    if dry_run is None:
+        dry_run = flag(os.environ.get("PIXELCADE_DRY_RUN", data.get("dry_run", False)))
+    name = os.environ.get("PIXELCADE_NAME") or data.get("name") or None
+    return Settings(
+        url=normalize_url(str(url)),
+        timeout_s=timeout,
+        pulse_max_brightness=cap,
+        dry_run=dry_run,
+        name=str(name) if name else None,
+    )
