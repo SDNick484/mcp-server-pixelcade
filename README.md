@@ -24,6 +24,25 @@ MCP client ──stdio──▶ mcp-server-pixelcade ──HTTP :8080──▶ p
                                                                                               └──▶ Pulse strips
 ```
 
+## Local only: stdio, on your LAN
+
+This server is meant to run on your LAN, launched over **stdio** by Claude Code or Claude Desktop on a
+machine that can reach the arcade on TCP 8080. Unlike its AV siblings (Onkyo, Shield TV, Harmony, Sofabaton,
+webOS), it has no HTTP transport and isn't published through a Cloudflare Tunnel, so it isn't reachable from
+claude.ai or the Claude mobile app. That's on purpose:
+
+- **Pixelweb has no authentication.** Anything that can reach port 8080 can call every endpoint, including
+  `/reboot` and `/shutdown`, which this server leaves out. A remotely reachable server in front of it would
+  put the marquee and the Pulse power budget behind whatever protects the server, not the arcade.
+- **It's a single-room device.** The marquee is only worth changing for someone who can see it.
+
+So it takes the code it shares with its siblings from
+[mcp-server-shared](https://github.com/SDNick484/mcp-server-shared) but excludes the `remote` module (the
+Streamable HTTP transport behind Cloudflare Access) in [`shared.lock`](shared.lock). If you ever want remote
+access, that's the place to start: drop the exclusion, add a `serve --http` mode like
+[mcp-server-misterfpga](https://github.com/SDNick484/mcp-server-misterfpga)'s, and put a Cloudflare Access
+application in front of it. Don't expose port 8080 directly.
+
 ## Install
 
 ```sh
