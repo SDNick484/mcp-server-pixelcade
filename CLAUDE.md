@@ -21,7 +21,9 @@ reasoning behind non-obvious changes instead of only making them.
 - `src/pixelcade_mcp/doctor.py`: layer-by-layer checks; `STEP` maps layers to HARDWARE_VALIDATION.md steps
 - `src/pixelcade_mcp/sim/fake_pixelweb.py`: wire-level fake pixelweb (real HTTP, raw paths recorded,
   `routes`/`slow_s`/`drop` faults); used by the tests and `simulate`
-- `src/pixelcade_mcp/logsafe.py`: log redaction, **byte-identical** across the sibling servers
+- `src/pixelcade_mcp/logsafe.py`, `tasks.py`, `ratelimit.py` (and their tests): shared with the sibling
+  servers, synced from `mcp-server-shared` by `scripts/sync_shared.py` at the commit in `shared.lock`.
+  `tasks.py` and `ratelimit.py` aren't used here yet. `remote.py` is excluded: this server is LAN-only.
 - `src/pixelcade_mcp/effects.py`: Pulse effect catalog (reference data, not an allow-list)
 - `src/pixelcade_mcp/cli.py`: `serve` (default), `doctor` (`check`), `simulate`, `call`
 - `tests/`: `conftest.py` (a `FakePixelweb` per test; `MockPixelweb` on `httpx.MockTransport` only for
@@ -48,7 +50,8 @@ reasoning behind non-obvious changes instead of only making them.
 - **Don't invent pixelweb behavior.** Anything not seen on hardware goes in `assumptions.py`, is cited where
   the code relies on it (`# ASSUMPTION PX-...`), is implemented the same way in `fake_pixelweb.py`, gets a
   test, a HARDWARE_VALIDATION.md step and a README table row. `tests/test_assumptions.py` fails if they drift.
-- `logsafe.py` is shared: change it in one sibling, copy it to the others.
+- **Shared files are changed in `mcp-server-shared`, never here**: the `shared-drift` CI job fails on an
+  edited copy. Then `python scripts/sync_shared.py --update` here, and commit the files with `shared.lock`.
 
 ## pixelweb facts the code depends on
 
