@@ -7,7 +7,8 @@ verification table lists, and that ``mcp-server-pixelcade doctor`` prints while
 it's unconfirmed. tests/test_assumptions.py fails if they drift apart.
 
 Sources, read 2026-10: Pixelcade's API reference (pixelcade.org/developers), the
-Pulse page (pixelcade.org/pulse), and Pixelcade's own Batocera hook scripts
+Pulse page (pixelcade.org/pulse), the release notes (pixelcade.org/release-notes,
+through pixelweb 8.0.17), and Pixelcade's own Batocera hook scripts
 (github.com/alinke/pixelcade-linux, batocera/scripts/). Nothing has been seen on
 the owner's marquee yet. To record a result, set ``status`` to
 "hardware-verified" (or "hardware-contradicted"), say what you saw in ``note``.
@@ -28,6 +29,7 @@ Status = Literal["simulator-only", "hardware-verified", "hardware-contradicted"]
 
 DOCS = "pixelcade.org/developers"
 SCRIPTS = "pixelcade-linux batocera/scripts"
+RELEASES = "pixelcade.org/release-notes"
 
 
 @dataclass(frozen=True)
@@ -55,7 +57,8 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "ledStrip, ledStripBrightness and ledStripNumPixels.",
         f"{DOCS} (Device Information example)",
         "medium",
-        note="From the documented example; older pixelweb versions may lack the Pulse fields.",
+        note="From the documented example; older pixelweb versions may lack the Pulse fields. The 8.x docs add "
+        "sidekick, sidekick-ids and sidekick-models (companion displays), which this server doesn't use.",
     ),
     Assumption(
         "PX-CURRENTGAME",
@@ -63,7 +66,10 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "'system%rom' (the docs').",
         f"{SCRIPTS} game-selected; {DOCS}",
         "medium",
-        note="The two sources disagree; the parser accepts both.",
+        note="Pixelcade's own scripts disagree: game-selected says 'mame,digdug', achievements says "
+        "'mame%digdug'. The parser splits at whichever separator comes first, so a comma in a ROM name survives. "
+        "Unknown: whether game-selected events during the screensaver (which pixelweb ignores, PX-ATTRACT-LOCK) "
+        "still update it.",
     ),
     Assumption(
         "PX-LISTS",
@@ -97,19 +103,43 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
     ),
     Assumption(
         "PX-FRONTEND",
-        "EmulationStation's hooks call /arcade/stream/...?event=FEScroll on every scroll and /attract/stop on "
-        "every game launch, so whatever this server shows lasts until the next frontend event.",
-        f"{SCRIPTS} game-selected, game-start",
+        "EmulationStation's hooks call /console/stream/<system>/?event=FEScroll and "
+        "/arcade/stream/<system>/<rom>?event=FEScroll as you scroll (game-selected skips the call when the game "
+        "matches /currentgame), and /attract/stop then a queued marquee (l=99999&event=GameStart) on every game "
+        "launch, so whatever this server shows lasts until the next frontend event.",
+        f"{SCRIPTS} system-selected, game-selected, game-start",
         "high",
-        note="Read in the scripts the installer puts on Batocera.",
+        note="Read in the scripts the installer puts on Batocera (pixelcade-linux, last changed 2026-06).",
     ),
     Assumption(
         "PX-WIDGETS",
         "/clock (clockType=, 12h=), /weather (location=), /stocks (tickers=), /sports[/<league>] (teams=) and "
-        "/attract show widgets; ?nointerrupt keeps one up through frontend events; /attract/stop ends them.",
+        "/attract show widgets; ?nointerrupt locks one in place (PX-ATTRACT-LOCK); /attract/stop ends them.",
         DOCS,
         "medium",
         note="Documented; the themed clock types depend on the pixelweb version.",
+    ),
+    Assumption(
+        "PX-ATTRACT-LOCK",
+        "?nointerrupt locks the marquee: other API calls, this server's included, don't change it until "
+        "/attract/stop. Pixelcade's Batocera screensaver-start hook calls /attract?nointerrupt and "
+        "screensaver-stop calls /attract/stop, so while the cabinet's screensaver runs, the marquee shows the "
+        "attract playlist and ignores both the screensaver's game-selected events and this server.",
+        f"{DOCS} (attract mode: 'prevents interruption by other API calls'); {SCRIPTS} screensaver-start, "
+        "screensaver-stop",
+        "medium",
+        note="The hook calls are read in the scripts. Unknown: whether ignored calls still answer 200 (the "
+        "simulator assumes so), whether queued (l=N) calls wait for the lock, and whether Pulse calls are locked "
+        "too (the simulator doesn't lock them).",
+    ),
+    Assumption(
+        "PX-DEFAULT-MARQUEE",
+        "pixelweb 8.0.14 and later have GET /defaultmarquee, which shows the default marquee "
+        "(console/default-marquee.png) on the LED and LCD when called with no parameters; older versions answer 404.",
+        f"{RELEASES} (8.0.14); {DOCS} (default marquee path)",
+        "low",
+        note="Only in the release notes, not the API reference: parameters, reply and how it interacts with "
+        "the queue and attract lock are unknown.",
     ),
     Assumption(
         "PX-ZONES",

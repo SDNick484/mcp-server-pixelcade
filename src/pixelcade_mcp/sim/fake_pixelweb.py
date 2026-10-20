@@ -10,6 +10,13 @@ say pixelweb does, each behavior tagged with its assumption (assumptions.py):
   - list endpoints answer a JSON array (PX-LISTS: a guess; the client accepts several formats)
   - other controls answer 200 with a short body, unknown paths 404 (PX-REPLIES: a guess)
   - ``/ledstrip/brightness/<n>`` changes what ``/ledstrip/getbrightness`` reports (PX-BRIGHTNESS)
+  - ``?nointerrupt`` locks the marquee until ``/attract/stop``: other display calls answer 200 but
+    change nothing, and Pulse calls aren't locked (PX-ATTRACT-LOCK). ``screensaver()`` does what
+    Pixelcade's Batocera screensaver-start hook does.
+  - ``/defaultmarquee`` exists, as in pixelweb 8.0.14+ (PX-DEFAULT-MARQUEE); route it to 404 for an older one
+
+``showing`` is the display call the marquee is showing now (None after a stop), which is
+how tests tell an ignored call from one that took effect.
 
 It records each request's *raw* path, percent-encoding and all, because the
 encoding is what pixelweb is most sensitive to. ``routes`` overrides any path's
@@ -35,7 +42,7 @@ INFO: dict[str, Any] = {
     "firmwareVersion": "PDXR0023",
     "hardwareID": "PIXL0020",
     "v2board": True,
-    "softwareVersion": "7.8.5-sim",
+    "softwareVersion": "8.0.17-sim",
     "resolution": "128x32",
     "bindPort": 8080,
     "hasLEDStripSupport": True,
@@ -54,8 +61,10 @@ CONTROL_PREFIXES = (
     "/stocks",
     "/sports",
     "/attract",
+    "/defaultmarquee",
     "/ledstrip/",
 )
+STOPS = ("/attract/stop", "/widgets/stop")
 LISTS = {
     "/arcade/list": ["pacman", "mspacman", "galaga", "digdug", "dkong", "sf2", "1942", "pacland"],
     "/still/list": ["pixelcade", "batocera", "default-marquee"],
@@ -79,6 +88,8 @@ class FakePixelweb:
         self.slow_s = 0.0
         self.drop = False
         self.requests: list[str] = []
+        self.showing: str | None = None
+        self.locked = False
         self.on_request: Callable[[str], None] | None = None  # simulate prints what the marquee shows
         self._lock = threading.Lock()
         self._http = _QuietHTTPServer((host, port), self._handler())
@@ -105,6 +116,20 @@ class FakePixelweb:
 
     def __exit__(self, *exc: object) -> None:
         self.stop()
+
+    def screensaver(self) -> None:
+        """What Pixelcade's Batocera screensaver-start hook does: GET /attract?nointerrupt."""
+        self.handle("/attract?nointerrupt")
+
+    def _display(self, raw: str, path: str) -> None:
+        """Track what the marquee shows, honoring the attract lock (PX-ATTRACT-LOCK)."""
+        if path.startswith("/ledstrip/"):
+            return
+        if path in STOPS:
+            self.showing, self.locked = None, False
+        elif not self.locked:
+            self.showing = raw
+            self.locked = "nointerrupt" in raw.partition("?")[2].split("&")
 
     def handle(self, raw: str) -> tuple[int, str, str]:
         """(status, content type, body) for one GET, as pixelweb answers it."""
@@ -135,7 +160,9 @@ class FakePixelweb:
             except ValueError:
                 return 400, "text/plain", "bad brightness"
             return 200, "text/plain", "OK"
-        if path.startswith(CONTROL_PREFIXES):
+        if path.startswith(CONTROL_PREFIXES) or path == "/widgets/stop":
+            with self._lock:
+                self._display(raw, path)
             return 200, "text/plain", "OK"
         return 404, "text/plain", "404 page not found"
 

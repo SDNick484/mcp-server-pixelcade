@@ -2,7 +2,8 @@
 
   config    - PIXELCADE_URL parses; dry run on or off; the brightness cap
   tcp       - the arcade accepts TCP on pixelweb's port (8080)
-  info      - /info answers and describes the hardware: LED, V2 board, firmware (PX-INFO)
+  info      - /info answers and describes the hardware: LED, V2 board, firmware, pixelweb version (PX-INFO),
+              noting when it's too old for show_default_marquee (PX-DEFAULT-MARQUEE)
   frontend  - /currentgame says which game the frontend last selected (PX-CURRENTGAME)
   pulse     - if strips are configured, the board reports their brightness (PX-BRIGHTNESS), and whether
               it's above this server's cap (PX-POWER)
@@ -21,7 +22,7 @@ from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlparse
 
 from .assumptions import unverified
-from .client import PixelcadeClient, PixelcadeError, parse_current_game
+from .client import DEFAULT_MARQUEE_SINCE, PixelcadeClient, PixelcadeError, parse_current_game, parse_version
 from .config import Settings
 from .logsafe import redact
 
@@ -101,6 +102,11 @@ async def run_doctor(settings: Settings, timeout: float = 5.0) -> Report:
         v2 = info.get("v2board")
         detail = f"{info.get('name', 'Pixelcade')}: {kind} {info.get('resolution', '?')}, V2 board {v2}, "
         detail += f"firmware {info.get('firmwareVersion', '?')}, pixelweb {info.get('softwareVersion', '?')}"
+        # Read from the version rather than probed: calling /defaultmarquee would change the display.
+        found = parse_version(str(info.get("softwareVersion", "")))
+        if found is not None and found < DEFAULT_MARQUEE_SINCE:
+            since = ".".join(map(str, DEFAULT_MARQUEE_SINCE))
+            detail += f" (show_default_marquee needs {since}+)"
         add(Check("info", True, detail))
 
         try:

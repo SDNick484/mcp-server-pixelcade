@@ -5,7 +5,14 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from pixelcade_mcp.client import PixelcadeClient, PixelcadeError, build_path, parse_current_game, parse_name_list
+from pixelcade_mcp.client import (
+    PixelcadeClient,
+    PixelcadeError,
+    build_path,
+    parse_current_game,
+    parse_name_list,
+    parse_version,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -43,12 +50,25 @@ async def test_httpx_sends_the_path_unchanged(settings, fake):
         ("mame,digdug", {"system": "mame", "rom": "digdug"}),
         ("snes,Super Mario World (USA)\n", {"system": "snes", "rom": "Super Mario World (USA)"}),
         ("mame%pacman", {"system": "mame", "rom": "pacman"}),
+        # Whichever separator comes first wins, so commas and % inside ROM names survive.
+        ("snes%Legend of Zelda, The (USA)", {"system": "snes", "rom": "Legend of Zelda, The (USA)"}),
+        ("pc,100% Orange Juice", {"system": "pc", "rom": "100% Orange Juice"}),
         ("", None),
         ("mame,", None),
+        (",pacman", None),
     ],
 )
 def test_parse_current_game(body, expected):
+    # ASSUMPTION PX-CURRENTGAME
     assert parse_current_game(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("8.0.17", (8, 0, 17)), ("7.8.5-sim", (7, 8, 5)), ("8", (8,)), ("", None), ("dev", None), (None, None)],
+)
+def test_parse_version(text, expected):
+    assert parse_version(text) == expected
 
 
 @pytest.mark.parametrize(

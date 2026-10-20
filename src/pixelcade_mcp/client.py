@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import quote
@@ -39,7 +40,13 @@ class PixelcadeError(ToolError):
 
     Subclassing the SDK's ToolError matters: only ToolError messages reach the
     model; other exceptions surface only as "Error executing tool <name>".
+    ``status`` is pixelweb's HTTP status when it answered with an error, so a
+    tool can add advice for one case (a 404 from an endpoint newer than the arcade's pixelweb).
     """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def encode(value: str) -> str:
@@ -89,17 +96,28 @@ class Status(TypedDict):
 def parse_current_game(body: str) -> CurrentGame | None:
     """``/currentgame`` -> {system, rom}.
 
-    Batocera's own hook script reads it as "mame,digdug"; the API docs show
-    "console%game-name". Accept either; an empty answer means nothing was
-    selected since pixelweb started.
+    Batocera's game-selected hook reads it as "mame,digdug"; the API docs and
+    the achievements hook show "mame%digdug". Accept either, splitting at
+    whichever separator comes first: system names have neither, but ROM names
+    can have commas ("Zelda, The"). An empty answer means nothing was selected
+    since pixelweb started.
     """
     v = body.strip().strip('"')
-    for sep in (",", "%"):
-        if sep in v:
-            system, rom = v.split(sep, 1)
-            if system.strip() and rom.strip():
-                return CurrentGame(system=system.strip(), rom=rom.strip())
-    return None
+    cuts = [i for i in (v.find(","), v.find("%")) if i > 0]
+    if not cuts:
+        return None
+    system, rom = v[: min(cuts)].strip(), v[min(cuts) + 1 :].strip()
+    return CurrentGame(system=system, rom=rom) if system and rom else None
+
+
+# ASSUMPTION PX-DEFAULT-MARQUEE: new in pixelweb 8.0.14, and only in the release notes.
+DEFAULT_MARQUEE_SINCE = (8, 0, 14)
+
+
+def parse_version(text: str | None) -> tuple[int, ...] | None:
+    """pixelweb's softwareVersion ("8.0.17", "7.8.5-sim") -> (8, 0, 17); None if it doesn't start with one."""
+    m = re.match(r"\s*(\d+(?:\.\d+)*)", text or "")
+    return tuple(int(n) for n in m.group(1).split(".")) if m else None
 
 
 # ASSUMPTION PX-LISTS: the format isn't documented, so this is deliberately tolerant.
@@ -179,9 +197,10 @@ class PixelcadeClient:
             if resp.status_code == 404:  # ASSUMPTION PX-REPLIES
                 raise PixelcadeError(
                     f"pixelweb at {url} has no {path.split('?')[0]} endpoint ({snippet}). "
-                    "Pixelcade may need updating (re-run the Pixelcade installer on the arcade)."
+                    "Pixelcade may need updating (re-run the Pixelcade installer on the arcade).",
+                    status=404,
                 )
-            raise PixelcadeError(f"pixelweb answered {resp.status_code}: {snippet}")
+            raise PixelcadeError(f"pixelweb answered {resp.status_code}: {snippet}", status=resp.status_code)
         return body
 
     async def get_json(self, segments: Sequence[str], query: Query = ()) -> dict[str, Any]:

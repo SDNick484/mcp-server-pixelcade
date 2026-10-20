@@ -17,6 +17,8 @@ at steps 1, 5 and 6 by number, so keep the numbering if you edit this file.
 | `show_text` options and queueing | verified against simulator only | 3 |
 | Widgets (themed clocks, weather, stocks, sports, attract) | verified against simulator only | 4 |
 | Interplay with the frontend's own marquee changes | verified against simulator only | 5 |
+| The screensaver's attract lock; `stop_widgets` releasing it | verified against simulator only | 5 |
+| `show_default_marquee` (pixelweb 8.0.14+) | verified against simulator only | 2 |
 | Pulse effects, fills, clearing, brightness cap | verified against simulator only | 6 |
 | Dry run and ActionResult | verified against simulator only | 7 |
 | Log redaction (shared logsafe.py) | verified against simulator only | 1 |
@@ -28,7 +30,6 @@ at steps 1, 5 and 6 by number, so keep the numbering if you edit this file.
 
 ```sh
 git clone https://github.com/SDNick484/mcp-server-pixelcade.git && cd mcp-server-pixelcade
-git checkout hardware-free
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pytest -q                          # expect: all passed
@@ -49,7 +50,8 @@ Confirms PX-INFO.
 
 1. `mcp-server-pixelcade doctor`. Expect `ok` for config, tcp and info, with `LED 128x32, V2 board True`.
 2. `curl -s http://192.168.1.20:8080/info > captures/info.json`. **Record** which of the fields in
-   PX-INFO are present, and the pixelweb version.
+   PX-INFO are present, and the pixelweb version. If doctor says it's older than 8.0.14, update
+   Pixelcade before step 2.7, or skip that step.
 3. `doctor --json > captures/doctor.json`: the address should read `x.x.x.20` (redaction).
 
 ## 2. Marquees
@@ -69,7 +71,11 @@ Confirms PX-GET-API, PX-CURRENTGAME, PX-REPLIES, PX-LISTS.
    `call list_artwork kind=arcade contains=pac`.
 6. Scroll to a game in the frontend, then `curl -s http://192.168.1.20:8080/currentgame`. **Record** the
    exact format (PX-CURRENTGAME). `call show_text text=HI`, then `call show_current_game`: the frontend's
-   marquee comes back.
+   marquee comes back. If you have a game whose ROM name has a comma (`..., The (USA)`), select it and
+   check that `get_status` shows the whole name.
+7. `call show_default_marquee`: **record** what appears (the default marquee, on the LED and on an LCD
+   if you have one) and `curl -si http://192.168.1.20:8080/defaultmarquee | head -1` (PX-DEFAULT-MARQUEE).
+   On a pixelweb older than 8.0.14, expect a refusal that names 8.0.14.
 
 ## 3. Text
 
@@ -101,6 +107,15 @@ Confirms PX-FRONTEND.
 2. `call show_widget widget=clock lock=true`, scroll again: the clock stays. Launch a game: the clock stops
    (the game-start hook calls `/attract/stop`). Quit the game.
 3. `mcp-server-pixelcade doctor`: the `frontend` line names the last game you selected.
+4. `call show_widget widget=clock lock=true`, then `call show_text text=HI`: the text call succeeds but the
+   clock stays (PX-ATTRACT-LOCK). **Record** the `(pixelweb: ...)` reply. `call stop_widgets`, then
+   `call show_text text=HI`: the text appears.
+5. Set the screensaver to *random video* with a 1-minute delay, and wait: Pixelcade's attract mode starts.
+   As the screensaver changes videos, the marquee should **not** follow, because attract mode is locked.
+   `call show_text text=HI`: **record** whether the marquee changes (expected: no). `call stop_widgets`:
+   attract mode ends while the screensaver keeps running; **record** whether the marquee then follows the
+   screensaver's videos. Wake the cabinet, then `call get_status`: **record** whether `current_game` is
+   the game you had selected or the last screensaver video's (PX-CURRENTGAME).
 
 ## 6. Pulse (once the strips are installed)
 

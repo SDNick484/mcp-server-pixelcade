@@ -61,13 +61,19 @@ From pixelcade.org/developers and Pixelcade's Batocera hook scripts (github.com/
 `batocera/scripts/`); **not yet verified on hardware**:
 - All control is GET. Flags are bare (`?nogif`, `?nointerrupt`, `?cycle`); the hook scripts encode
   spaces as `%20` (RFC 3986 unreserved characters only), so URLs are built by hand, not with `params=`.
-- `/currentgame` returns `mame,digdug` per the hook script (docs say `console%game-name`); both parse.
+- `/currentgame` returns `mame,digdug` per the game-selected hook (docs and the achievements hook say
+  `mame%digdug`); both parse, split at whichever separator comes first.
 - Text line breaks are the literal two characters `\n` inside `t=`.
 - Queueing: `l=N` (N >= 1) queues; a call without `l` interrupts and clears the queue. Scripted queue
   items carry `event=FEScroll`.
 - Zone clear is `/ledstrip/{zone}/clear` (no `zone/` segment), unlike effect and flood.
 - EmulationStation hooks call `/arcade/stream/...?event=FEScroll` on scroll and `/attract/stop` on every
   game launch, so anything we show is temporary.
+- `?nointerrupt` locks the marquee against *all* other API calls until `/attract/stop`. Pixelcade's
+  screensaver-start hook calls `/attract?nointerrupt`, so during the cabinet's screensaver our calls answer
+  OK but change nothing; `stop_widgets` releases it (PX-ATTRACT-LOCK).
+- `/defaultmarquee` exists from pixelweb 8.0.14 (release notes only, PX-DEFAULT-MARQUEE). Pixelweb 8.x is
+  otherwise Sidekick work; the API we use is unchanged.
 
 Unknowns to confirm on the real board: the response format of `/arcade/list`, `/still/list` and
 `/animations/list` (parsed tolerantly), status codes for missing artwork, and whether `/news` exists.
