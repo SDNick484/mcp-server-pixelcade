@@ -33,6 +33,16 @@ def test_doctor_ok(env, capsys):
     assert "Not yet confirmed on hardware" in out and "PX-ZONES" in out
 
 
+def test_doctor_notes_a_pixelweb_too_old_for_the_default_marquee(env, capsys):
+    # ASSUMPTION PX-DEFAULT-MARQUEE: read from the version, never probed (that would change the display).
+    code, out, _ = run(["doctor"], capsys)
+    assert "pixelweb 8.0.17-sim" in out and "needs 8.0.14" not in out
+    env.info["softwareVersion"] = "7.9.9"
+    code, out, _ = run(["doctor"], capsys)
+    assert code == 0 and "pixelweb 7.9.9 (show_default_marquee needs 8.0.14+)" in out
+    assert "/defaultmarquee" not in env.requests
+
+
 def test_doctor_flags_brightness_above_the_cap(env, capsys, monkeypatch):
     # ASSUMPTION PX-POWER
     env.brightness = 200

@@ -23,6 +23,7 @@ ALL_TOOLS = {
     "show_game_marquee",
     "show_console_marquee",
     "show_current_game",
+    "show_default_marquee",
     "show_text",
     "play_animation",
     "show_widget",
@@ -144,7 +145,42 @@ async def test_show_current_game(mcp_client, fake):
 async def test_show_current_game_with_nothing_selected(mcp_client, fake):
     fake.routes["/currentgame"] = (200, "")
     r = await call(mcp_client, "show_current_game")
-    assert r.is_error and "nothing to restore" in text(r)
+    assert r.is_error and "nothing to restore" in text(r) and "show_default_marquee" in text(r)
+
+
+async def test_show_default_marquee(mcp_client, fake):
+    # ASSUMPTION PX-DEFAULT-MARQUEE
+    r = (await call(mcp_client, "show_default_marquee")).structured_content
+    assert (r["outcome"], r["sent"]) == ("done", ["GET /defaultmarquee"])
+    assert fake.showing == "/defaultmarquee"
+
+
+async def test_show_default_marquee_on_pixelweb_older_than_8_0_14(mcp_client, fake):
+    fake.routes["/defaultmarquee"] = (404, "404 page not found")
+    r = await call(mcp_client, "show_default_marquee")
+    assert r.is_error and "new in Pixelcade 8.0.14" in text(r) and "show_console_marquee" in text(r)
+
+
+async def test_screensaver_lock_ignores_calls_until_stop_widgets(mcp_client, fake):
+    # ASSUMPTION PX-ATTRACT-LOCK: Pixelcade's screensaver-start hook locks the marquee in attract mode.
+    fake.screensaver()
+    r = (await call(mcp_client, "show_text", text="HI")).structured_content
+    assert r["outcome"] == "done"  # pixelweb still answers OK...
+    assert fake.showing == "/attract?nointerrupt"  # ...but the marquee didn't change
+    await call(mcp_client, "pulse_fill", zone="left_strip", color="red")  # Pulse isn't locked
+    await call(mcp_client, "stop_widgets")
+    assert (fake.showing, fake.locked) == (None, False)
+    await call(mcp_client, "show_text", text="HI")
+    assert fake.showing == "/text?t=HI"
+
+
+async def test_locked_widget_warns_and_holds_the_marquee(mcp_client, fake):
+    r = (await call(mcp_client, "show_widget", widget="clock", lock=True)).structured_content
+    assert r["warnings"] and "stop_widgets" in r["warnings"][0]
+    await call(mcp_client, "show_game_marquee", system="mame", rom="galaga")
+    assert fake.showing is not None and fake.showing.startswith("/clock?nointerrupt")
+    unlocked = (await call(mcp_client, "show_widget", widget="clock")).structured_content
+    assert unlocked["warnings"] == []
 
 
 async def test_show_text(mcp_client, fake):
@@ -252,8 +288,8 @@ async def test_unreachable_pixelweb_explains_itself(settings, monkeypatch):
 # --- ActionResult and dry run ------------------------------------------------------------------
 ACTIONS = {
     "show_game_marquee", "show_console_marquee", "show_current_game", "show_text", "play_animation",
-    "show_widget", "stop_widgets", "blank_display", "pulse_effect", "pulse_fill", "pulse_clear",
-    "set_pulse_brightness",
+    "show_widget", "stop_widgets", "blank_display", "show_default_marquee", "pulse_effect", "pulse_fill",
+    "pulse_clear", "set_pulse_brightness",
 }  # fmt: skip
 
 
@@ -290,7 +326,7 @@ async def test_dry_run_reads_but_sends_nothing(dry_client, fake):
     for tool, args in [
         ("show_text", {"text": "x"}), ("show_console_marquee", {"system": "snes"}), ("show_current_game", {}),
         ("play_animation", {"name": "0rain"}), ("show_widget", {"widget": "clock"}), ("stop_widgets", {}),
-        ("blank_display", {}), ("pulse_effect", {"zone": "left_strip", "effect": "fire"}),
+        ("blank_display", {}), ("show_default_marquee", {}), ("pulse_effect", {"zone": "left_strip", "effect": "fire"}),
         ("pulse_fill", {"zone": "0", "color": "red"}), ("pulse_clear", {}), ("set_pulse_brightness", {"level": 10}),
     ]:  # fmt: skip
         assert (await call(dry_client, tool, **args)).structured_content["outcome"] == "dry_run", tool

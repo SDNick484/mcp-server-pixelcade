@@ -31,7 +31,16 @@ from pydantic import Field
 from typing_extensions import TypedDict
 
 from . import config as cfg
-from .client import PixelcadeClient, PixelcadeError, Query, Status, build_path, parse_current_game, parse_name_list
+from .client import (
+    DEFAULT_MARQUEE_SINCE,
+    PixelcadeClient,
+    PixelcadeError,
+    Query,
+    Status,
+    build_path,
+    parse_current_game,
+    parse_name_list,
+)
 from .config import ClockStyle, SportsLeague, load_settings
 from .effects import EFFECTS, PATTERNS, EffectCategory
 
@@ -67,7 +76,10 @@ mcp = MCPServer(
         "Call get_status first: it says whether the arcade is reachable, which game is selected, and whether "
         "Pulse strips are configured. The arcade frontend (EmulationStation on Batocera) also drives the marquee: "
         "scrolling to or launching a game replaces whatever you showed, and launching a game stops widgets. "
-        "Use show_current_game to put the frontend's marquee back."  # ASSUMPTION PX-FRONTEND
+        "Use show_current_game to put the frontend's marquee back, or show_default_marquee for the default one. "
+        # ASSUMPTION PX-FRONTEND, PX-ATTRACT-LOCK
+        "While the cabinet's screensaver runs, Pixelcade locks the marquee in attract mode: other calls still "
+        "succeed but change nothing until stop_widgets ends the lock. A widget shown with lock=true does the same."
     ),
     lifespan=lifespan,
 )
@@ -231,7 +243,10 @@ async def show_game_marquee(
     rom: Rom,
     animation: Annotated[
         Literal["auto", "still", "animated"],
-        Field(description="auto: animated then still if both exist; still: PNG only; animated: GIF only."),
+        Field(
+            description="auto: animated then still if both exist; still: PNG only; animated: GIF only. "
+            "Pixelcade 8's 'static PNG marquees only' setting, if the user turned it on, may override animated."
+        ),
     ] = "auto",
     loops: Annotated[
         int | None,
@@ -285,9 +300,28 @@ async def show_current_game() -> ActionResult:
     game = parse_current_game(await c.get(["currentgame"]))
     if game is None:
         raise PixelcadeError(
-            "No game has been selected in the frontend since pixelweb started, so there is nothing to restore."
+            "No game has been selected in the frontend since pixelweb started, so there is nothing to restore. "
+            "show_default_marquee shows the default marquee instead."
         )
     return await _send(["arcade", "stream", game["system"], game["rom"]], [], f"Showing {game['system']}/{game['rom']}")
+
+
+@mcp.tool(title="Show the default marquee", annotations=_SET)
+async def show_default_marquee() -> ActionResult:
+    """Show Pixelcade's default marquee (the one it uses when a game has no artwork), e.g. when no game is
+    selected or to clear text. Needs pixelweb 8.0.14 or later; get_status shows the version.
+    """
+    try:
+        return await _send(["defaultmarquee"], [], "Showing the default marquee")
+    except PixelcadeError as exc:
+        if exc.status != 404:
+            raise
+        since = ".".join(map(str, DEFAULT_MARQUEE_SINCE))
+        raise PixelcadeError(
+            f"This pixelweb has no /defaultmarquee; it's new in Pixelcade {since}. Updating Pixelcade on the "
+            "arcade adds it; until then, show_console_marquee or show_text can stand in.",
+            status=404,
+        ) from exc
 
 
 def _one_line(text: str) -> str:
@@ -408,7 +442,10 @@ async def show_widget(
     ] = None,
     lock: Annotated[
         bool,
-        Field(description="Keep it up until stop_widgets (or a game launch), ignoring frontend scrolling."),
+        Field(
+            description="Lock it in place until stop_widgets (or a game launch): frontend scrolling and other "
+            "marquee calls, this server's included, are ignored meanwhile."
+        ),
     ] = False,
 ) -> ActionResult:
     """Show a live widget on the marquee: a clock (optionally arcade-themed), weather, a stock ticker,
@@ -436,12 +473,20 @@ async def show_widget(
             path.append(league)
         if teams:
             query.append(("teams", _check(cfg.teams, teams)))
-    return await _send(path, query, f"Showing the {widget} widget")
+    result = await _send(path, query, f"Showing the {widget} widget")
+    if lock:
+        # ASSUMPTION PX-ATTRACT-LOCK
+        result["warnings"].append("The marquee is locked: other marquee calls change nothing until stop_widgets.")
+    return result
 
 
 @mcp.tool(title="Stop widgets", annotations=_SET)
 async def stop_widgets() -> ActionResult:
-    """Stop any running widget or attract mode and return the marquee to normal arcade mode."""
+    """Stop any running widget or attract mode and return the marquee to normal arcade mode.
+
+    This also ends the lock Pixelcade puts on the marquee while the cabinet's screensaver runs, so call it
+    first if marquee changes seem to be ignored. The screensaver itself keeps running.
+    """
     return await _send(["attract", "stop"], [], "Stopped widgets")
 
 

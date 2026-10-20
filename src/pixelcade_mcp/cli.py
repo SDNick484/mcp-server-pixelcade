@@ -52,8 +52,9 @@ async def _cmd_simulate(args: argparse.Namespace) -> int:
     from .sim.fake_pixelweb import FakePixelweb
 
     fake = FakePixelweb(port=args.port)
-    # Echo each request, so you can see what a tool call would put on the marquee.
-    fake.on_request = lambda raw: print(f"  pixelweb <- GET {raw}", flush=True)
+    # Echo each request, so you can see what a tool call would put on the marquee, and flag the ones
+    # that arrive while the marquee is locked (PX-ATTRACT-LOCK): those change nothing until a stop.
+    fake.on_request = lambda raw: print(f"  pixelweb <- GET {raw}{'  [locked]' if fake.locked else ''}", flush=True)
     fake.start()
     print(f"Simulated pixelweb: {fake.url} (V2 LED marquee, 90 Pulse LEDs, frontend on mame/digdug)")
     if args.write_config:

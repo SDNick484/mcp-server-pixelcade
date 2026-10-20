@@ -95,6 +95,7 @@ mirrored networking. A DHCP reservation plus the IP address is the dependable ch
 | `show_game_marquee`    | A game's marquee by system + ROM name; still/animated choice, optional queueing and fallback text |
 | `show_console_marquee` | A system marquee, e.g. `snes`                                                                   |
 | `show_current_game`    | Put back the marquee for the game selected in EmulationStation                                  |
+| `show_default_marquee` | Pixelcade's default marquee (needs pixelweb 8.0.14+)                                            |
 | `show_text`            | Scrolling or fixed text: color, speed, loops, 1/2/4 lines, blink, left-justify                  |
 | `play_animation`       | One of Pixelcade's built-in animations                                                         |
 | `show_widget`          | Clock (19 arcade themes), weather, stocks, sports scores, or the attract-mode playlist          |
@@ -107,8 +108,19 @@ mirrored networking. A DHCP reservation plus the IP address is the dependable ch
 
 **The frontend drives the marquee too.** EmulationStation's Pixelcade hooks call pixelweb whenever you
 scroll to a system or game, and every game launch calls `/attract/stop`. So whatever the model shows
-lasts until the next frontend event. `show_widget(lock=true)` keeps a widget up through scrolling (until
-`stop_widgets` or a game launch), and `show_current_game` restores the frontend's marquee.
+lasts until the next frontend event. `show_current_game` restores the frontend's marquee, and
+`show_default_marquee` shows the default one.
+
+**Locks.** `show_widget(lock=true)` sends `?nointerrupt`, which Pixelcade documents as preventing
+interruption by *other API calls*, this server's included, until `stop_widgets` or a game launch.
+Pixelcade's Batocera screensaver hooks do the same: the screensaver starts attract mode with
+`?nointerrupt` and ends it with `/attract/stop`. So while the screensaver runs, marquee calls succeed
+but change nothing (PX-ATTRACT-LOCK); `stop_widgets` releases the lock.
+
+**Pixelcade 8.x.** Pixelweb 8 is mostly about Sidekick companion displays; the API this server uses is
+unchanged. It adds `/defaultmarquee` (8.0.14, PX-DEFAULT-MARQUEE), and a companion-app setting to show
+static PNG marquees only, which may override `show_game_marquee(animation="animated")`. `doctor` shows
+the pixelweb version and notes when it's too old for `show_default_marquee`.
 
 **Names:** `system` is the Batocera ROM folder name (`mame`, `fbneo`, `snes`, …) and `rom` is the file
 name without its extension (`pacman`, `Super Mario World (USA)`), the same values Batocera's own hook
@@ -161,6 +173,8 @@ guess. Nothing has been confirmed on hardware yet.
 | `PX-QUEUE` | medium | simulator-only |
 | `PX-FRONTEND` | high | simulator-only |
 | `PX-WIDGETS` | medium | simulator-only |
+| `PX-ATTRACT-LOCK` | medium | simulator-only |
+| `PX-DEFAULT-MARQUEE` | low | simulator-only |
 | `PX-ZONES` | medium | simulator-only |
 | `PX-BRIGHTNESS` | medium | simulator-only |
 | `PX-POWER` | high | simulator-only |
