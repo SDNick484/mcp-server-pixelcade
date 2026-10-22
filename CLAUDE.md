@@ -26,6 +26,9 @@ reasoning behind non-obvious changes instead of only making them.
   `tasks.py` and `ratelimit.py` aren't used here yet. `remote.py` is excluded: this server is LAN-only.
 - `src/pixelcade_mcp/effects.py`: Pulse effect catalog (reference data, not an allow-list)
 - `src/pixelcade_mcp/cli.py`: `serve` (default), `doctor` (`check`), `simulate`, `call`
+- `deploy/alpine/`: command-line install on Alpine (venv, `mcp-pixelcade` user, `/etc/.../env`, a `PATH`
+  command that drops to the user; caller's environment beats the file). No service yet; `smoke-test.sh` runs
+  in CI. Keep it in step with mcp-server-batocera's.
 - `tests/`: `conftest.py` (a `FakePixelweb` per test; `MockPixelweb` on `httpx.MockTransport` only for
   failures a socket can't produce, like DNS errors), `test_config`, `test_client`, `test_tools` (in-process
   MCP `Client`, dry run, faults), `test_cli`, `test_assumptions`, `test_logsafe`, `test_stdio`.

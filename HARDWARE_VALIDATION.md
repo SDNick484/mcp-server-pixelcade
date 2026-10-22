@@ -37,6 +37,11 @@ export PIXELCADE_URL=192.168.1.20
 mkdir -p captures
 ```
 
+**Or on an Alpine machine on the LAN** (e.g. a Proxmox LXC), installed with `deploy/alpine/` or
+mcp-server-batocera's `setup-arcade.sh`: skip the clone, venv and `export`, set PIXELCADE_URL in
+`/etc/mcp-server-pixelcade/env`, and run the `mcp-server-pixelcade ...` commands below as they are, as root over SSH.
+Replace `curl` with `wget -qO-` there, or `apk add curl`.
+
 **Tool calls** use `mcp-server-pixelcade call <tool> key=value ...`, through the same MCP layer the model
 uses; `call tools` lists them. Every action's result includes `sent`, the exact GET that went to pixelweb,
 which is what to compare when something looks wrong. Watch the marquee while you go.

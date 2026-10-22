@@ -1,0 +1,10 @@
+#!/bin/sh
+# /usr/local/bin/mcp-server-pixelcade: run the CLI as user mcp-pixelcade with its settings.
+# root drops to the user; the user itself (or anyone else allowed to read the
+# settings) runs it directly.
+STATE=/var/lib/mcp-server-pixelcade
+RUN=/opt/mcp-server-pixelcade/run.sh
+if [ "$(id -u)" = 0 ]; then
+	HOME=$STATE exec su-exec mcp-pixelcade "$RUN" "$@"
+fi
+exec "$RUN" "$@"
