@@ -53,6 +53,29 @@ mcp-server-pixelcade call show_text text="GAME NIGHT" color=cyan   # one tool ca
 mcp-server-pixelcade call --dry-run blank_display                  # reports the GET it would send
 ```
 
+### On Alpine (e.g. a Proxmox LXC)
+
+`deploy/alpine/` installs it to run from the command line on an always-on Alpine machine on the same
+LAN as the arcade: a venv in `/opt/mcp-server-pixelcade`, a `mcp-pixelcade` system user, every setting
+in `/etc/mcp-server-pixelcade/env`, and `mcp-server-pixelcade` on `PATH`, which runs as that user with
+those settings. Nothing listens on a port, so there's no service to secure; you run `doctor` and `call`
+over SSH. The layout matches the sibling servers' `deploy/alpine/`, so an OpenRC service can be added
+later without moving anything.
+
+```sh
+git clone https://github.com/SDNick484/mcp-server-pixelcade.git && cd mcp-server-pixelcade
+sh deploy/alpine/install.sh                                # as root; re-run to upgrade
+vim /etc/mcp-server-pixelcade/env                          # PIXELCADE_URL=<the arcade's IP>
+mcp-server-pixelcade doctor
+mcp-server-pixelcade call show_text text="GAME NIGHT" color=cyan
+```
+
+A variable set in your shell beats the env file, so one-off overrides work as usual
+(`PIXELCADE_DRY_RUN=1 mcp-server-pixelcade call ...`). mcp-server-batocera's
+`deploy/alpine/setup-arcade.sh` installs both arcade servers in a Proxmox container in one go. CI runs
+`deploy/alpine/smoke-test.sh` in a stock `python:3.12-alpine` container: install, upgrade, the test
+suite on musl, and `doctor` and `call` through the command on `PATH` against the simulator.
+
 ## Use it with an MCP client
 
 ```json
