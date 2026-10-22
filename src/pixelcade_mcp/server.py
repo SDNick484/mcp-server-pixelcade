@@ -21,6 +21,7 @@ validated, percent-encoded segments, so no argument can name another endpoint.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal, TypeVar
@@ -164,12 +165,6 @@ class ArtworkList(TypedDict):
     truncated: bool
 
 
-Contains = Annotated[
-    str | None,
-    Field(default=None, max_length=60, description="Case-insensitive substring filter, e.g. 'pac'."),
-]
-
-
 @mcp.tool(title="List marquee artwork", annotations=_READ)
 async def list_artwork(
     folder: Annotated[
@@ -181,7 +176,10 @@ async def list_artwork(
             "system marquees; 'animations' for play_animation names; 'user' for the user's own uploads.",
         ),
     ],
-    contains: Contains = None,
+    contains: Annotated[
+        str | None,
+        Field(default=None, max_length=60, description="Case-insensitive substring filter, best matches first."),
+    ] = None,
     kind: Annotated[
         Literal["any", "still", "animated"],
         Field(description="any, or only names that have a still (PNG/JPG) or an animated (GIF) version."),
@@ -210,10 +208,19 @@ async def list_artwork(
     total = len(rows)
     if contains:
         needle = contains.strip().lower()
-        rows = [r for r in rows if needle in r["name"].lower()]
+        rows = sorted((r for r in rows if needle in r["name"].lower()), key=lambda r: _rank(r["name"], needle))
     if kind != "any":
         rows = [r for r in rows if r[kind]]
     return ArtworkList(folder=f, total=total, matches=len(rows), artwork=rows[:limit], truncated=len(rows) > limit)
+
+
+def _rank(name: str, needle: str) -> tuple[int, str]:
+    """Best matches first: the exact name, then names starting with it, then a word starting with it,
+    then anything containing it ('pac' puts pacman before 20pacgal); alphabetical within each."""
+    n = name.lower()
+    words = re.split(r"[^a-z0-9]+", n)
+    tier = 0 if n == needle else 1 if n.startswith(needle) else 2 if any(w.startswith(needle) for w in words) else 3
+    return tier, n
 
 
 class EffectCatalog(TypedDict):

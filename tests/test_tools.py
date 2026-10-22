@@ -104,14 +104,20 @@ async def test_list_artwork_filters_and_truncates(mcp_client, fake):
     assert r == {
         "folder": "mame",
         "total": 10,
-        "matches": 3,  # mspacman, pacland (pacland.png and pacland_2.png), pacman
+        "matches": 3,  # pacland (pacland.png and pacland_2.png), pacman, then mspacman: starts-with first
         "artwork": [
-            {"name": "mspacman", "still": True, "animated": False},
             {"name": "pacland", "still": True, "animated": False},
+            {"name": "pacman", "still": True, "animated": True},
         ],
         "truncated": True,
     }
     assert fake.posts == [("/api/images/list", '{"name":"mame"}')]
+
+
+async def test_list_artwork_ranks_best_matches_first(mcp_client, fake):
+    fake.folders["mame"] = ["20pacgal.png", "pacman.png", "Pac-Man (Midway).png", "mspacman.png", "pac.png"]
+    r = (await call(mcp_client, "list_artwork", folder="mame", contains="pac")).structured_content
+    assert [a["name"] for a in r["artwork"]] == ["pac", "Pac-Man (Midway)", "pacman", "20pacgal", "mspacman"]
 
 
 async def test_list_artwork_kind_filter(mcp_client, fake):
