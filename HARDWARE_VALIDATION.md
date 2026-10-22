@@ -61,7 +61,8 @@ Confirms PX-INFO.
 
 ## 2. Marquees
 
-Confirms PX-GET-API, PX-CURRENTGAME, PX-REPLIES, PX-LISTS.
+Confirms PX-GET-API, PX-CURRENTGAME, PX-REPLIES, PX-IMAGES-LIST, PX-DEFAULT-MARQUEE; PX-LISTS was
+contradicted here (see 5).
 
 1. `call show_game_marquee system=mame rom=galaga`: the Galaga marquee appears. **Record** the
    `(pixelweb: ...)` reply in `detail` (PX-REPLIES).
@@ -71,9 +72,12 @@ Confirms PX-GET-API, PX-CURRENTGAME, PX-REPLIES, PX-LISTS.
 3. `call show_game_marquee system=mame rom=nosuchgame fallback_text="NO ART"`: **record** what shows
    and the HTTP status (`curl -si ".../arcade/stream/mame/nosuchgame" | head -1`).
 4. `call show_console_marquee system=snes`, then `call play_animation name=0rain` (or a name from step 5).
-5. `curl -s http://192.168.1.20:8080/arcade/list | head -c 300 > captures/arcade-list.txt`, and the same for
-   `/still/list` and `/animations/list`. **Record** the format (PX-LISTS), then try
-   `call list_artwork kind=arcade contains=pac`.
+5. Artwork lists. The documented `/arcade/list`, `/still/list` and `/animations/list` answer 404 on
+   pixelweb 8.0.17 (PX-LISTS, contradicted); pixelweb's own web page lists a folder with
+   `POST /api/images/list` (PX-IMAGES-LIST):
+   `curl -s -X POST -H Content-Type:application/json -d '{"name":"mame"}' http://192.168.1.20:8080/api/images/list | head -c 300`.
+   Then `call list_artwork folder=mame contains=pac`, `folder=animations limit=5`, and `folder=still`
+   (expect a refusal naming the folder, without the arcade's file path).
 6. Scroll to a game in the frontend, then `curl -s http://192.168.1.20:8080/currentgame`. **Record** the
    exact format (PX-CURRENTGAME). `call show_text text=HI`, then `call show_current_game`: the frontend's
    marquee comes back. If you have a game whose ROM name has a comma (`..., The (USA)`), select it and

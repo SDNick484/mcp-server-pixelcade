@@ -113,7 +113,7 @@ mirrored networking. A DHCP reservation plus the IP address is the dependable ch
 | Tool                   | What it does                                                                                   |
 | ---------------------- | ---------------------------------------------------------------------------------------------- |
 | `get_status`           | Reachability, hardware/firmware/software versions, the frontend's selected game, Pulse state   |
-| `list_artwork`         | Arcade, still or animation names pixelweb has, with a substring filter                         |
+| `list_artwork`         | The marquees in one folder (a system, `console`, `animations`, `user`): names, still/animated |
 | `list_pulse_effects`   | Pulse effect names by category, per-game/per-system name patterns, and zone names              |
 | `show_game_marquee`    | A game's marquee by system + ROM name; still/animated choice, optional queueing and fallback text |
 | `show_console_marquee` | A system marquee, e.g. `snes`                                                                   |
@@ -190,7 +190,8 @@ guess. Hardware results so far are from pixelweb 8.0.17 on a V2 board (2026-10-2
 | `PX-GET-API` | high | simulator-only |
 | `PX-INFO` | medium | hardware-verified |
 | `PX-CURRENTGAME` | medium | hardware-verified |
-| `PX-LISTS` | low | simulator-only |
+| `PX-LISTS` | low | hardware-contradicted |
+| `PX-IMAGES-LIST` | high | hardware-verified |
 | `PX-REPLIES` | low | simulator-only |
 | `PX-TEXT` | medium | simulator-only |
 | `PX-QUEUE` | medium | simulator-only |

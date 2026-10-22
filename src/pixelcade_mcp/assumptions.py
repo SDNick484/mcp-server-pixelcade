@@ -81,7 +81,21 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "/arcade/list, /still/list and /animations/list return a list of names.",
         DOCS,
         "low",
-        note="The format isn't documented; the parser accepts a JSON array, a JSON object, or lines/commas.",
+        status="hardware-contradicted",
+        note=SEEN + "all three answer 404 (so do the documented /list/image/<system>, /list/image/all and "
+        "/list/video, which may be LCD-only). list_artwork uses PX-IMAGES-LIST instead.",
+    ),
+    Assumption(
+        "PX-IMAGES-LIST",
+        'POST /api/images/list with the JSON body {"name": "<folder>"} lists /userdata/system/pixelcade/<folder> '
+        "as [{name, system, urlPath, imagePath}], name being a file name; a missing folder answers 400 (plain text "
+        "'open <path>: no such file or directory'), and an empty name answers null.",
+        "pixelweb's own web page (its artwork browser's script); checked on hardware",
+        "high",
+        status="hardware-verified",
+        note=SEEN + "mame: 12,415 files (10,291 PNG, 2,124 GIF; 2 MB of JSON in 0.07 s); animations: 702 PNG; "
+        "console, user and system folders too; 'still' has no folder. The one POST this server sends: a read. "
+        "Undocumented, so a pixelweb update could change it.",
     ),
     Assumption(
         "PX-REPLIES",

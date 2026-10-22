@@ -11,8 +11,8 @@ from pixelcade_mcp.client import (
     PixelcadeClient,
     PixelcadeError,
     build_path,
+    parse_artwork,
     parse_current_game,
-    parse_name_list,
     parse_version,
 )
 
@@ -73,19 +73,25 @@ def test_parse_version(text, expected):
     assert parse_version(text) == expected
 
 
-@pytest.mark.parametrize(
-    ("body", "expected"),
-    [
-        ('["pacman","galaga"]', ["pacman", "galaga"]),
-        ('{"mame": ["pacman", "galaga"]}', ["pacman", "galaga"]),
-        ('{"pacman": 1, "galaga": 2}', ["pacman", "galaga"]),
-        ("pacman\ngalaga\n", ["pacman", "galaga"]),
-        ("pacman,galaga", ["pacman", "galaga"]),
-        ("", []),
-    ],
-)
-def test_parse_name_list(body, expected):
-    assert parse_name_list(body) == expected
+def _entries(*files):
+    return [{"name": f, "system": "mame", "urlPath": f"/images/mame/{f}", "imagePath": f"/x/mame/{f}"} for f in files]
+
+
+def test_parse_artwork_merges_stills_animations_and_variants():
+    # ASSUMPTION PX-IMAGES-LIST: one row per name, as pixelweb's own artwork browser shows them.
+    rows = parse_artwork(_entries("digdug.png", "digdug.gif", "digdug1.png", "pacland_2.png", "Pacland.PNG",
+                                  "readme.txt", "noext", "Galaga (Midway, Set 1).png"))  # fmt: skip
+    assert rows == [
+        {"name": "digdug", "still": True, "animated": True},
+        {"name": "digdug1", "still": True, "animated": False},  # a different ROM, not a variant
+        {"name": "Galaga (Midway, Set 1)", "still": True, "animated": False},
+        {"name": "pacland", "still": True, "animated": False},  # pacland_2 and Pacland.PNG: one name
+    ]
+
+
+@pytest.mark.parametrize("data", [None, "null", {"error": "x"}, [1, "x", {"nope": 1}]])
+def test_parse_artwork_tolerates_odd_answers(data):
+    assert parse_artwork(data) == []
 
 
 # --- Errors ------------------------------------------------------------------

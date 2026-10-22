@@ -33,13 +33,14 @@ from typing_extensions import TypedDict
 from . import config as cfg
 from .client import (
     DEFAULT_MARQUEE_SINCE,
+    Artwork,
     PixelcadeClient,
     PixelcadeError,
     Query,
     Status,
     build_path,
+    parse_artwork,
     parse_current_game,
-    parse_name_list,
 )
 from .config import ClockStyle, SportsLeague, load_settings
 from .effects import EFFECTS, PATTERNS, EffectCategory
@@ -156,10 +157,10 @@ async def get_status() -> Status:
 
 
 class ArtworkList(TypedDict):
-    kind: str
-    total: int
-    matches: int
-    names: list[str]
+    folder: str
+    total: int  # distinct names in the folder
+    matches: int  # after the contains/kind filters
+    artwork: list[Artwork]
     truncated: bool
 
 
@@ -171,23 +172,48 @@ Contains = Annotated[
 
 @mcp.tool(title="List marquee artwork", annotations=_READ)
 async def list_artwork(
-    kind: Annotated[
-        Literal["arcade", "stills", "animations"],
-        Field(description="arcade: MAME game names with artwork; stills: still images; animations: animation names."),
+    folder: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=60,
+            description="A Batocera system (mame, snes, nes, neogeo, ...) for its games' marquees; 'console' for "
+            "system marquees; 'animations' for play_animation names; 'user' for the user's own uploads.",
+        ),
     ],
     contains: Contains = None,
+    kind: Annotated[
+        Literal["any", "still", "animated"],
+        Field(description="any, or only names that have a still (PNG/JPG) or an animated (GIF) version."),
+    ] = "any",
     limit: Annotated[int, Field(ge=1, le=500, description="Maximum names to return.")] = 100,
 ) -> ArtworkList:
-    """List artwork names pixelweb has, optionally filtered. Use it to check a name before showing it:
-    arcade names work as the rom for show_game_marquee with system 'mame', animation names for play_animation.
+    """List the artwork pixelweb has in one folder, one row per name, saying whether a still and an animated
+    version exist. A name works as the rom for show_game_marquee with that system (or as play_animation's name
+    for folder 'animations'). Names come in more than one style: MAME short names (pacman) and full titles
+    (Galaga (Midway, Set 1)); the frontend uses the ROM file's name, so check with contains first.
     """
-    path = {"arcade": ["arcade", "list"], "stills": ["still", "list"], "animations": ["animations", "list"]}[kind]
-    names = parse_name_list(await client().get(path))
-    total = len(names)
+    # ASSUMPTION PX-IMAGES-LIST: the endpoint pixelweb's own artwork browser uses. The documented
+    # /arcade/list, /still/list and /animations/list don't exist (PX-LISTS).
+    f = _check(cfg.path_segment, folder, "folder", 60)
+    try:
+        data = await client().post_json(["api", "images", "list"], {"name": f})
+    except PixelcadeError as exc:
+        if exc.status != 400:
+            raise
+        raise PixelcadeError(
+            f"There's no artwork folder named '{f}' on the arcade. Folders are named after Batocera systems "
+            "(mame, snes, ...), plus console, animations and user.",
+            status=400,
+        ) from exc
+    rows = parse_artwork(data)
+    total = len(rows)
     if contains:
         needle = contains.strip().lower()
-        names = [n for n in names if needle in n.lower()]
-    return ArtworkList(kind=kind, total=total, matches=len(names), names=names[:limit], truncated=len(names) > limit)
+        rows = [r for r in rows if needle in r["name"].lower()]
+    if kind != "any":
+        rows = [r for r in rows if r[kind]]
+    return ArtworkList(folder=f, total=total, matches=len(rows), artwork=rows[:limit], truncated=len(rows) > limit)
 
 
 class EffectCatalog(TypedDict):
@@ -410,13 +436,15 @@ async def show_text(
 
 @mcp.tool(title="Play an animation", annotations=_ACT)
 async def play_animation(
-    name: Annotated[str, Field(min_length=1, max_length=100, description="An animation name from list_artwork.")],
+    name: Annotated[
+        str, Field(min_length=1, max_length=100, description="An animation name from list_artwork folder='animations'.")
+    ],
     loops: Annotated[
         int | None,
         Field(default=None, ge=1, le=50, description="Queue it and play this many times; omit to play now."),
     ] = None,
 ) -> ActionResult:
-    """Play one of Pixelcade's built-in animations on the marquee (see list_artwork kind='animations')."""
+    """Play one of Pixelcade's built-in animations on the marquee (see list_artwork folder='animations')."""
     n = _check(cfg.path_segment, name, "animation name", 100)
     query: Query = [("l", loops)] if loops else []
     return await _send(["animations", "stream", n], query, f"Playing animation {n}")

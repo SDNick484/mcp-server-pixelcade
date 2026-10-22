@@ -128,29 +128,41 @@ def parse_version(text: str | None) -> tuple[int, ...] | None:
     return tuple(int(n) for n in m.group(1).split(".")) if m else None
 
 
-# ASSUMPTION PX-LISTS: the format isn't documented, so this is deliberately tolerant.
-def parse_name_list(body: str) -> list[str]:
-    """The list endpoints' format isn't documented, so take what comes:
-    a JSON array, a JSON object whose values (or keys) are names, or plain
-    text with one name per line or comma-separated."""
-    text = body.strip()
-    if not text:
-        return []
-    try:
-        data: Any = json.loads(text)
-    except json.JSONDecodeError:
-        sep = "\n" if "\n" in text else ","
-        return [s.strip() for s in text.split(sep) if s.strip()]
-    names: list[str] = []
-    if isinstance(data, list):
-        names = [str(x) for x in data if isinstance(x, (str, int))]
-    elif isinstance(data, dict):
-        for value in data.values():
-            if isinstance(value, list):
-                names.extend(str(x) for x in value if isinstance(x, (str, int)))
-        if not names:
-            names = [str(k) for k in data]
-    return [n.strip() for n in names if n.strip()]
+class Artwork(TypedDict):
+    name: str  # what show_game_marquee takes as rom (or play_animation as name)
+    still: bool  # a PNG/JPG exists
+    animated: bool  # a GIF exists
+
+
+STILL_EXTS = {"png", "jpg", "jpeg", "bmp"}
+ANIMATED_EXTS = {"gif"}
+_VARIANT = re.compile(r"_\d+$")
+
+
+# ASSUMPTION PX-IMAGES-LIST: entries are {name, system, urlPath, imagePath}; name is a file name.
+def parse_artwork(data: Any) -> list[Artwork]:
+    """/api/images/list's file entries -> one row per name, sorted case-insensitively.
+
+    Like pixelweb's own artwork browser, a name is the file name without its extension and
+    without a trailing _<n> variant ("pacman_2.png" is pacman), so digdug.png and digdug.gif
+    are one game with both a still and an animation. Other file types are skipped.
+    """
+    rows: dict[str, Artwork] = {}
+    for entry in data if isinstance(data, list) else []:
+        file = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(file, str) or "." not in file:
+            continue
+        stem, ext = file.rsplit(".", 1)
+        ext = ext.lower()
+        if ext not in STILL_EXTS | ANIMATED_EXTS:
+            continue
+        name = _VARIANT.sub("", stem).strip()
+        if not name:
+            continue
+        row = rows.setdefault(name.lower(), Artwork(name=name, still=False, animated=False))
+        row["still"] = row["still"] or ext in STILL_EXTS
+        row["animated"] = row["animated"] or ext in ANIMATED_EXTS
+    return sorted(rows.values(), key=lambda r: r["name"].lower())
 
 
 def _str(info: dict[str, Any], key: str) -> str | None:
@@ -188,12 +200,27 @@ class PixelcadeClient:
 
         ``timeout`` shortens the wait for one request (the client's default is PIXELCADE_TIMEOUT).
         """
-        path = build_path(segments, query)
+        return await self._request("GET", build_path(segments, query), timeout=timeout)
+
+    async def post_json(self, segments: Sequence[str], body: dict[str, Any]) -> Any:
+        """POST a JSON body and parse the JSON answer. Only for reads pixelweb serves as POST
+        (its artwork browser's /api/images/list); every control is a GET."""
+        text = await self._request("POST", build_path(segments, ()), json_body=body)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise PixelcadeError(f"pixelweb sent something that isn't JSON: {text.strip()[:200]!r}") from exc
+
+    async def _request(
+        self, method: str, path: str, json_body: dict[str, Any] | None = None, timeout: float | None = None
+    ) -> str:
         url = self.settings.url
         wait = timeout if timeout is not None else self.settings.timeout_s
-        log.info("GET %s", path)
+        log.info("%s %s", method, path)
         try:
-            resp = await self._http.get(path, timeout=httpx.Timeout(wait, connect=min(wait, 5.0)))
+            resp = await self._http.request(
+                method, path, json=json_body, timeout=httpx.Timeout(wait, connect=min(wait, 5.0))
+            )
         except httpx.ConnectError as exc:
             raise PixelcadeError(_connect_advice(url, exc)) from exc
         except httpx.TimeoutException as exc:

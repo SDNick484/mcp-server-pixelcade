@@ -99,9 +99,44 @@ async def test_get_status(mcp_client):
 
 
 async def test_list_artwork_filters_and_truncates(mcp_client, fake):
-    fake.routes["/arcade/list"] = (200, '["pacman","mspacman","galaga","pacland"]')
-    r = (await call(mcp_client, "list_artwork", kind="arcade", contains="PAC", limit=2)).structured_content
-    assert r == {"kind": "arcade", "total": 4, "matches": 3, "names": ["pacman", "mspacman"], "truncated": True}
+    # ASSUMPTION PX-IMAGES-LIST
+    r = (await call(mcp_client, "list_artwork", folder="mame", contains="PAC", limit=2)).structured_content
+    assert r == {
+        "folder": "mame",
+        "total": 10,
+        "matches": 3,  # mspacman, pacland (pacland.png and pacland_2.png), pacman
+        "artwork": [
+            {"name": "mspacman", "still": True, "animated": False},
+            {"name": "pacland", "still": True, "animated": False},
+        ],
+        "truncated": True,
+    }
+    assert fake.posts == [("/api/images/list", '{"name":"mame"}')]
+
+
+async def test_list_artwork_kind_filter(mcp_client, fake):
+    r = (await call(mcp_client, "list_artwork", folder="mame", kind="animated")).structured_content
+    assert [a["name"] for a in r["artwork"]] == ["digdug", "pacman"]
+
+
+async def test_list_artwork_missing_folder(mcp_client, fake):
+    r = await call(mcp_client, "list_artwork", folder="still")
+    assert r.is_error and "no artwork folder named 'still'" in text(r)
+    assert "/userdata" not in text(r)  # pixelweb's error names a path on the arcade; ours doesn't
+
+
+@pytest.mark.parametrize("folder", ["..", "mame/../..", "a\\b"])
+async def test_list_artwork_refuses_paths(mcp_client, fake, folder):
+    # The folder name becomes a directory on the arcade, so it must be one plain name.
+    r = await call(mcp_client, "list_artwork", folder=folder)
+    assert r.is_error and fake.posts == []
+
+
+async def test_documented_list_endpoints_are_gone(fake):
+    # ASSUMPTION PX-LISTS: contradicted on pixelweb 8.0.17, and the fake answers the same way.
+    from pixelcade_mcp.sim.fake_pixelweb import REMOVED_LISTS
+
+    assert all(fake.handle(p)[0] == 404 for p in REMOVED_LISTS)
 
 
 async def test_list_pulse_effects_needs_no_device(mcp_client, fake):
