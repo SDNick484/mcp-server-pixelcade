@@ -30,6 +30,7 @@ Status = Literal["simulator-only", "hardware-verified", "hardware-contradicted"]
 DOCS = "pixelcade.org/developers"
 SCRIPTS = "pixelcade-linux batocera/scripts"
 RELEASES = "pixelcade.org/release-notes"
+SEEN = "Seen 2026-10-22 on a V2 LED (firmware PIXR0023), pixelweb 8.0.17 on Batocera 43, from a Proxmox LXC: "
 
 
 @dataclass(frozen=True)
@@ -57,8 +58,10 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "ledStrip, ledStripBrightness and ledStripNumPixels.",
         f"{DOCS} (Device Information example)",
         "medium",
-        note="From the documented example; older pixelweb versions may lack the Pulse fields. The 8.x docs add "
-        "sidekick, sidekick-ids and sidekick-models (companion displays), which this server doesn't use.",
+        status="hardware-verified",
+        note=SEEN + "every field present, plus many more: platform, arcadeFrontend 'Batocera', ledActive, "
+        "noAnimatedMarquees (the 8.x 'static PNG marquees only' setting, now in get_status), sidekick, "
+        "sidekick-ids, sidekick-models, sidekickOnly, centerMatrixResolution, isMiSTer, vestaboard*.",
     ),
     Assumption(
         "PX-CURRENTGAME",
@@ -66,8 +69,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "'system%rom' (the docs').",
         f"{SCRIPTS} game-selected; {DOCS}",
         "medium",
-        note="Pixelcade's own scripts disagree: game-selected says 'mame,digdug', achievements says "
-        "'mame%digdug'. The parser splits at whichever separator comes first, so a comma in a ROM name survives. "
+        status="hardware-verified",
+        note=SEEN + "'neogeo%eightman': the docs' and achievements hook's '%', not the comma game-selected's "
+        "comment says. The parser splits at whichever separator comes first, so a comma in a ROM name survives. "
         "Unknown: whether game-selected events during the screensaver (which pixelweb ignores, PX-ATTRACT-LOCK) "
         "still update it.",
     ),
@@ -156,7 +160,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "from the board.",
         f"{DOCS} (Pulse API)",
         "medium",
-        note="Documented; needs strips connected to check.",
+        note="Documented; needs strips connected to check. Seen 2026-10-22 with strips configured in pixelweb "
+        "(ledStrip true, 50 LEDs) but none connected: /ledstrip/getbrightness never answered (30 s), so get_status "
+        "and doctor wait only PULSE_STATUS_TIMEOUT_S (2 s) and report pulse.responding false.",
     ),
     Assumption(
         "PX-POWER",

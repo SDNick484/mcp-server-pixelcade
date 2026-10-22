@@ -146,8 +146,9 @@ async def _send(segments: list[str], query: Query, detail: str) -> ActionResult:
 @mcp.tool(title="Get Pixelcade status", annotations=_READ)
 async def get_status() -> Status:
     """Report whether the Pixelcade is reachable, its hardware and software versions, the game last
-    selected in the arcade frontend, and Pulse LED strip state (whether configured, pixel count,
-    brightness, and the brightness cap this server enforces).
+    selected in the arcade frontend, whether animated marquees are on, and Pulse LED strip state
+    (whether configured, pixel count, brightness, the brightness cap this server enforces, and whether
+    the board answers: pulse.responding false means Pulse tools won't work, e.g. no strips connected).
 
     When unreachable, reachable is false and error says why; nothing else is known then.
     """
@@ -245,7 +246,8 @@ async def show_game_marquee(
         Literal["auto", "still", "animated"],
         Field(
             description="auto: animated then still if both exist; still: PNG only; animated: GIF only. "
-            "Pixelcade 8's 'static PNG marquees only' setting, if the user turned it on, may override animated."
+            "If get_status says animated_marquees is false (Pixelcade's 'static PNG marquees only' "
+            "setting), stills are shown instead."
         ),
     ] = "auto",
     loops: Annotated[

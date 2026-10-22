@@ -5,9 +5,9 @@ and **Pixelcade Pulse** lighting (WS2812B strips, speaker rings and matrices on 
 MCP client such as Claude show game and system marquees, scroll text, run arcade-themed clocks and other
 widgets, and drive Pulse lighting effects.
 
-> **Status: early / untested on hardware.** Tested against a wire-level fake pixelweb and end to end over
-> stdio, but not yet run against a real Pixelcade: see [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md)
-> and the [verification table](#verification-status).
+> **Status: early, hardware testing under way.** Tested against a wire-level fake pixelweb and end to end
+> over stdio; on a real V2 board (pixelweb 8.0.17), `doctor` and `get_status` work, the rest isn't confirmed
+> yet: see [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) and the [verification table](#verification-status).
 
 This is not an official Pixelcade project.
 
@@ -183,13 +183,13 @@ Every pixelweb behavior the code relies on is listed in `src/pixelcade_mcp/assum
 source and how sure we are; the code cites each id where it depends on it, and
 [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) has the step that confirms it. *high* means documented
 and used the same way by Pixelcade's own scripts; *medium* means documented only; *low* means our own
-guess. Nothing has been confirmed on hardware yet.
+guess. Hardware results so far are from pixelweb 8.0.17 on a V2 board (2026-10-22).
 
 | Assumption | Confidence | Status |
 |---|---|---|
 | `PX-GET-API` | high | simulator-only |
-| `PX-INFO` | medium | simulator-only |
-| `PX-CURRENTGAME` | medium | simulator-only |
+| `PX-INFO` | medium | hardware-verified |
+| `PX-CURRENTGAME` | medium | hardware-verified |
 | `PX-LISTS` | low | simulator-only |
 | `PX-REPLIES` | low | simulator-only |
 | `PX-TEXT` | medium | simulator-only |

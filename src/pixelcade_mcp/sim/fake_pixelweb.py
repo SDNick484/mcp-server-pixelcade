@@ -6,10 +6,11 @@ say pixelweb does, each behavior tagged with its assumption (assumptions.py):
 
   - every control is a GET; flags are bare query words (PX-GET-API)
   - ``/info`` reports a V2 LED marquee with Pulse strips (PX-INFO)
-  - ``/currentgame`` answers ``mame,digdug`` (PX-CURRENTGAME)
+  - ``/currentgame`` answers ``mame%digdug``, as pixelweb 8.0.17 does (PX-CURRENTGAME)
   - list endpoints answer a JSON array (PX-LISTS: a guess; the client accepts several formats)
   - other controls answer 200 with a short body, unknown paths 404 (PX-REPLIES: a guess)
-  - ``/ledstrip/brightness/<n>`` changes what ``/ledstrip/getbrightness`` reports (PX-BRIGHTNESS)
+  - ``/ledstrip/brightness/<n>`` changes what ``/ledstrip/getbrightness`` reports (PX-BRIGHTNESS);
+    ``hang`` makes a path never answer, as getbrightness does with no strips connected
   - ``?nointerrupt`` locks the marquee until ``/attract/stop``: other display calls answer 200 but
     change nothing, and Pulse calls aren't locked (PX-ATTRACT-LOCK). ``screensaver()`` does what
     Pixelcade's Batocera screensaver-start hook does.
@@ -43,6 +44,7 @@ INFO: dict[str, Any] = {
     "hardwareID": "PIXL0020",
     "v2board": True,
     "softwareVersion": "8.0.17-sim",
+    "noAnimatedMarquees": False,
     "resolution": "128x32",
     "bindPort": 8080,
     "hasLEDStripSupport": True,
@@ -82,10 +84,11 @@ class _QuietHTTPServer(ThreadingHTTPServer):
 class FakePixelweb:
     def __init__(self, host: str = "127.0.0.1", port: int = 0) -> None:
         self.info = dict(INFO)
-        self.current_game = "mame,digdug"
+        self.current_game = "mame%digdug"
         self.brightness = 64
         self.routes: dict[str, tuple[int, str]] = {}  # raw path (no query) -> (status, body)
         self.slow_s = 0.0
+        self.hang: set[str] = set()  # raw paths (no query) that never answer, e.g. Pulse with no strips
         self.drop = False
         self.requests: list[str] = []
         self.showing: str | None = None
@@ -175,6 +178,11 @@ class FakePixelweb:
             def do_GET(self) -> None:  # noqa: N802 (http.server's naming)
                 if fake.slow_s:
                     time.sleep(fake.slow_s)
+                if self.path.split("?", 1)[0] in fake.hang:
+                    # ASSUMPTION PX-BRIGHTNESS: seen on hardware, /ledstrip/getbrightness never answers when
+                    # strips are configured but not connected. Hold the request until the client gives up.
+                    time.sleep(30)
+                    return
                 if fake.drop:
                     self.close_connection = True
                     self.connection.shutdown(socket.SHUT_RDWR)

@@ -75,6 +75,9 @@ class Pulse(TypedDict):
     pixels: int | None
     brightness: int | None
     max_brightness: int
+    # False: strips are configured in pixelweb but the board didn't answer (none connected, or no power);
+    # brightness is then pixelweb's setting. None: not asked (strips not configured, or pixelweb unreachable).
+    responding: bool | None
 
 
 class Status(TypedDict):
@@ -90,6 +93,7 @@ class Status(TypedDict):
     software_version: str | None
     current_game: CurrentGame | None
     pulse: Pulse
+    animated_marquees: bool | None  # False: pixelweb shows still (PNG) marquees only; None: not reported
 
 
 # ASSUMPTION PX-CURRENTGAME
@@ -109,6 +113,10 @@ def parse_current_game(body: str) -> CurrentGame | None:
     system, rom = v[: min(cuts)].strip(), v[min(cuts) + 1 :].strip()
     return CurrentGame(system=system, rom=rom) if system and rom else None
 
+
+# How long get_status and doctor wait for the Pulse board: it doesn't answer when strips are configured
+# but not connected (PX-BRIGHTNESS), so waiting the full PIXELCADE_TIMEOUT would stall every status call.
+PULSE_STATUS_TIMEOUT_S = 2.0
 
 # ASSUMPTION PX-DEFAULT-MARQUEE: new in pixelweb 8.0.14, and only in the release notes.
 DEFAULT_MARQUEE_SINCE = (8, 0, 14)
@@ -175,18 +183,29 @@ class PixelcadeClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def get(self, segments: Sequence[str], query: Query = ()) -> str:
-        """GET a pixelweb endpoint and return the body, or raise PixelcadeError."""
+    async def get(self, segments: Sequence[str], query: Query = (), timeout: float | None = None) -> str:
+        """GET a pixelweb endpoint and return the body, or raise PixelcadeError.
+
+        ``timeout`` shortens the wait for one request (the client's default is PIXELCADE_TIMEOUT).
+        """
         path = build_path(segments, query)
         url = self.settings.url
+        wait = timeout if timeout is not None else self.settings.timeout_s
         log.info("GET %s", path)
         try:
-            resp = await self._http.get(path)
+            resp = await self._http.get(path, timeout=httpx.Timeout(wait, connect=min(wait, 5.0)))
         except httpx.ConnectError as exc:
             raise PixelcadeError(_connect_advice(url, exc)) from exc
         except httpx.TimeoutException as exc:
+            if path.startswith("/ledstrip/"):
+                # ASSUMPTION PX-BRIGHTNESS: seen on hardware, a Pulse request hangs when pixelweb has strips
+                # configured but none are connected.
+                raise PixelcadeError(
+                    f"pixelweb didn't answer a Pulse request within {wait:g}s. It has Pulse strips configured, "
+                    "but they may not be connected or powered (get_status: pulse.responding)."
+                ) from exc
             raise PixelcadeError(
-                f"pixelweb at {url} didn't answer within {self.settings.timeout_s:g}s. "
+                f"pixelweb at {url} didn't answer within {wait:g}s. "
                 "The arcade may be busy (a write to the marquee's SD card can take a while) or asleep."
             ) from exc
         except httpx.HTTPError as exc:
@@ -203,8 +222,10 @@ class PixelcadeClient:
             raise PixelcadeError(f"pixelweb answered {resp.status_code}: {snippet}", status=resp.status_code)
         return body
 
-    async def get_json(self, segments: Sequence[str], query: Query = ()) -> dict[str, Any]:
-        body = await self.get(segments, query)
+    async def get_json(
+        self, segments: Sequence[str], query: Query = (), timeout: float | None = None
+    ) -> dict[str, Any]:
+        body = await self.get(segments, query, timeout)
         try:
             data = json.loads(body)
         except json.JSONDecodeError as exc:
@@ -232,7 +253,10 @@ class PixelcadeClient:
                 firmware=None,
                 software_version=None,
                 current_game=None,
-                pulse=Pulse(supported=None, enabled=None, pixels=None, brightness=None, max_brightness=cap),
+                pulse=Pulse(
+                    supported=None, enabled=None, pixels=None, brightness=None, max_brightness=cap, responding=None
+                ),
+                animated_marquees=None,
             )
 
         current: CurrentGame | None = None
@@ -243,15 +267,24 @@ class PixelcadeClient:
 
         enabled = _bool(info, "ledStrip")
         brightness = _intval(info, "ledStripBrightness")
+        responding: bool | None = None
         if enabled:
-            # /info's brightness is pixelweb's setting; this one is read from the board.
+            # /info's brightness is pixelweb's setting; this one is read from the board. A short wait:
+            # with strips configured but not connected the board never answers (PX-BRIGHTNESS), and
+            # get_status is the first call a session makes.
             try:
                 # ASSUMPTION PX-BRIGHTNESS
-                live = (await self.get_json(["ledstrip", "getbrightness"])).get("brightness")
+                live = (await self.get_json(["ledstrip", "getbrightness"], timeout=PULSE_STATUS_TIMEOUT_S)).get(
+                    "brightness"
+                )
+                responding = True
                 if isinstance(live, int):
                     brightness = live
             except PixelcadeError as exc:
+                responding = False
                 log.warning("getbrightness failed: %s", exc)
+        # pixelweb 8's "static PNG marquees only" setting (seen in /info on 8.0.17); absent on older versions.
+        no_anim = info.get("noAnimatedMarquees")
 
         return Status(
             url=self.settings.url,
@@ -271,7 +304,9 @@ class PixelcadeClient:
                 pixels=_intval(info, "ledStripNumPixels"),
                 brightness=brightness,
                 max_brightness=cap,
+                responding=responding,
             ),
+            animated_marquees=(not no_anim) if isinstance(no_anim, bool) else None,
         )
 
 

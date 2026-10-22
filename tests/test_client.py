@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
 import pytest
 
@@ -135,7 +137,39 @@ async def test_status(settings, fake):
     assert s["reachable"] and s["v2_board"] and s["resolution"] == "128x32"
     assert s["current_game"] == {"system": "mame", "rom": "digdug"}
     # The board's live value beats /info's stored setting.
-    assert s["pulse"] == {"supported": True, "enabled": True, "pixels": 90, "brightness": 64, "max_brightness": 128}
+    assert s["pulse"] == {
+        "supported": True, "enabled": True, "pixels": 90, "brightness": 64, "max_brightness": 128, "responding": True
+    }  # fmt: skip
+    assert s["animated_marquees"] is True
+
+
+async def test_status_when_configured_strips_dont_answer(settings, fake):
+    # ASSUMPTION PX-BRIGHTNESS: seen on hardware with strips configured but not connected: getbrightness
+    # never answers. Status must not wait the full timeout, and falls back to /info's brightness setting.
+    fake.hang.add("/ledstrip/getbrightness")
+    fake.info["ledStripBrightness"] = 28
+    fake.brightness = 28
+    fake.info["noAnimatedMarquees"] = True
+    c = PixelcadeClient(settings)
+    try:
+        start = time.monotonic()
+        s = await c.status()
+        elapsed = time.monotonic() - start
+    finally:
+        await c.aclose()
+    assert elapsed < 1.5, elapsed  # the 0.3 s Pulse wait, not the 2 s client timeout
+    assert (s["pulse"]["responding"], s["pulse"]["brightness"]) == (False, 28)
+    assert s["animated_marquees"] is False
+
+
+async def test_a_pulse_request_that_hangs_says_why(settings, fake):
+    fake.hang.add("/ledstrip/zone/left_strip/flood")
+    c = PixelcadeClient(settings)
+    try:
+        with pytest.raises(PixelcadeError, match="Pulse strips configured, but they may not be connected"):
+            await c.get(["ledstrip", "zone", "left_strip", "flood"], timeout=0.3)
+    finally:
+        await c.aclose()
 
 
 async def test_status_without_strips_skips_the_board_query(settings, fake):

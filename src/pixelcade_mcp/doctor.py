@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlparse
 
+from . import client as client_mod
 from .assumptions import unverified
 from .client import DEFAULT_MARQUEE_SINCE, PixelcadeClient, PixelcadeError, parse_current_game, parse_version
 from .config import Settings
@@ -120,9 +121,16 @@ async def run_doctor(settings: Settings, timeout: float = 5.0) -> Report:
 
         if info.get("ledStrip"):
             try:
-                live = (await client.get_json(["ledstrip", "getbrightness"])).get("brightness")
+                live = (
+                    await client.get_json(["ledstrip", "getbrightness"], timeout=client_mod.PULSE_STATUS_TIMEOUT_S)
+                ).get("brightness")
             except PixelcadeError as exc:
-                add(Check("pulse", False, str(exc), _hint("pulse", "Strips are configured but don't report")))
+                pixels = info.get("ledStripNumPixels", "?")
+                add(Check("pulse", False, f"Pulse strips configured ({pixels} LEDs), but: {exc}", _hint(
+                    "pulse",
+                    "If no strips are connected and powered yet, that's expected; Pulse tools won't work until "
+                    "they are. Or turn LED strip support off in Pixelcade's settings",
+                )))  # fmt: skip
             else:
                 pixels = info.get("ledStripNumPixels", "?")
                 over = isinstance(live, int) and live > settings.pulse_max_brightness
