@@ -72,8 +72,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         status="hardware-verified",
         note=SEEN + "'neogeo%eightman': the docs' and achievements hook's '%', not the comma game-selected's "
         "comment says. The parser splits at whichever separator comes first, so a comma in a ROM name survives. "
-        "Unknown: whether game-selected events during the screensaver (which pixelweb ignores, PX-ATTRACT-LOCK) "
-        "still update it.",
+        "During the random-video screensaver it changed with each video (mystwaru, eightman, circusc), so "
+        "the screensaver's game-selected events update it even while attract mode holds the marquee: after the "
+        "screensaver, it names the last video's game, not the user's selection.",
     ),
     Assumption(
         "PX-LISTS",

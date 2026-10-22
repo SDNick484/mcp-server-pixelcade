@@ -297,7 +297,11 @@ async def show_console_marquee(system: System, fallback_text: FallbackText = Non
 
 @mcp.tool(title="Restore the frontend's marquee", annotations=_SET)
 async def show_current_game() -> ActionResult:
-    """Put back the marquee for the game currently selected in the arcade frontend, e.g. after showing text."""
+    """Put back the marquee for the game currently selected in the arcade frontend, e.g. after showing text.
+
+    After the cabinet's screensaver has run, this is the last game the screensaver showed, not the one the
+    user had selected, until they scroll in the frontend again.
+    """  # ASSUMPTION PX-CURRENTGAME
     c = client()
     game = parse_current_game(await c.get(["currentgame"]))
     if game is None:
