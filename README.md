@@ -196,7 +196,7 @@ guess. Hardware results so far are from pixelweb 8.0.17 on a V2 board (2026-10-2
 | `PX-TEXT` | medium | hardware-verified |
 | `PX-QUEUE` | medium | hardware-verified |
 | `PX-FRONTEND` | high | simulator-only |
-| `PX-WIDGETS` | medium | simulator-only |
+| `PX-WIDGETS` | medium | hardware-verified |
 | `PX-ATTRACT-LOCK` | medium | simulator-only |
 | `PX-DEFAULT-MARQUEE` | low | hardware-verified |
 | `PX-ZONES` | medium | simulator-only |

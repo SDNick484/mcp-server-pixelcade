@@ -151,7 +151,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "/attract show widgets; ?nointerrupt locks one in place (PX-ATTRACT-LOCK); /attract/stop ends them.",
         DOCS,
         "medium",
-        note="Documented; the themed clock types depend on the pixelweb version.",
+        status="hardware-verified",
+        note=SEEN + "Galaga and Pac-Man clocks (12h=false too), weather (saved location and a ZIP), a stock ticker "
+        "and NFL scores all rendered, with no settings beyond the install. ?nointerrupt and /attract: step 5.",
     ),
     Assumption(
         "PX-ATTRACT-LOCK",
