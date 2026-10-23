@@ -56,7 +56,8 @@ async def test_httpx_sends_the_path_unchanged(settings, fake):
         ("snes%Legend of Zelda, The (USA)", {"system": "snes", "rom": "Legend of Zelda, The (USA)"}),
         ("pc,100% Orange Juice", {"system": "pc", "rom": "100% Orange Juice"}),
         ("", None),
-        ("mame,", None),
+        ("mame,", {"system": "mame", "rom": None}),  # a system marquee
+        ("snes%", {"system": "snes", "rom": None}),
         (",pacman", None),
     ],
 )

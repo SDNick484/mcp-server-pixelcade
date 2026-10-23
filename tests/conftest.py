@@ -51,7 +51,8 @@ class MockPixelweb:
 
     def __init__(self) -> None:
         self.requests: list[str] = []
-        # Exact path (no query) -> (status, body). Unlisted paths answer 200 "OK".
+        # Exact path (no query) -> (status, body). Unlisted paths answer 200 "OK"
+        # (the real pixelweb sends an empty body; a body here exercises how replies are shown).
         self.routes: dict[str, tuple[int, str]] = {
             "/info": (200, json.dumps(INFO)),
             "/currentgame": (200, "mame,digdug"),

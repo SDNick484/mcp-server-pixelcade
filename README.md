@@ -152,7 +152,7 @@ scripts send.
 Every tool that changes the display returns the same structured result as the sibling servers:
 
 ```json
-{ "pixelcade": "Arcade marquee", "outcome": "done", "detail": "Showing the text (pixelweb: OK)",
+{ "pixelcade": "Arcade marquee", "outcome": "done", "detail": "Showing the text",
   "sent": ["GET /text?t=GAME%20NIGHT&c=cyan"], "warnings": [] }
 ```
 
@@ -192,7 +192,7 @@ guess. Hardware results so far are from pixelweb 8.0.17 on a V2 board (2026-10-2
 | `PX-CURRENTGAME` | medium | hardware-verified |
 | `PX-LISTS` | low | hardware-contradicted |
 | `PX-IMAGES-LIST` | high | hardware-verified |
-| `PX-REPLIES` | low | simulator-only |
+| `PX-REPLIES` | low | hardware-verified |
 | `PX-TEXT` | medium | simulator-only |
 | `PX-QUEUE` | medium | simulator-only |
 | `PX-FRONTEND` | high | simulator-only |

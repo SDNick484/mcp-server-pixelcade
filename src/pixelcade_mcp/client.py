@@ -66,7 +66,7 @@ def build_path(segments: Sequence[str], query: Query = ()) -> str:
 # --- Shapes returned to the model -----------------------------------------
 class CurrentGame(TypedDict):
     system: str
-    rom: str
+    rom: str | None  # None: a system marquee (/console/stream), which pixelweb records as "snes%"
 
 
 class Pulse(TypedDict):
@@ -98,20 +98,19 @@ class Status(TypedDict):
 
 # ASSUMPTION PX-CURRENTGAME
 def parse_current_game(body: str) -> CurrentGame | None:
-    """``/currentgame`` -> {system, rom}.
+    """``/currentgame`` -> {system, rom}: the last game or system marquee pixelweb showed.
 
-    Batocera's game-selected hook reads it as "mame,digdug"; the API docs and
-    the achievements hook show "mame%digdug". Accept either, splitting at
-    whichever separator comes first: system names have neither, but ROM names
-    can have commas ("Zelda, The"). An empty answer means nothing was selected
-    since pixelweb started.
+    pixelweb 8.0.17 answers "mame%digdug", or "snes%" after a system marquee (rom None); the
+    game-selected hook's comment says "mame,digdug". Accept either, splitting at whichever
+    separator comes first: system names have neither, but ROM names can have commas ("Zelda,
+    The"). An empty answer means nothing was shown since pixelweb started.
     """
     v = body.strip().strip('"')
     cuts = [i for i in (v.find(","), v.find("%")) if i > 0]
     if not cuts:
         return None
     system, rom = v[: min(cuts)].strip(), v[min(cuts) + 1 :].strip()
-    return CurrentGame(system=system, rom=rom) if system and rom else None
+    return CurrentGame(system=system, rom=rom or None) if system else None
 
 
 # How long get_status and doctor wait for the Pulse board: it doesn't answer when strips are configured

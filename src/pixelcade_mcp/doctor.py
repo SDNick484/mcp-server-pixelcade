@@ -116,8 +116,11 @@ async def run_doctor(settings: Settings, timeout: float = 5.0) -> Report:
             add(Check("frontend", False, str(exc), _hint("frontend", "/currentgame didn't answer")))
             game = None
         else:
-            selected = f"{game['system']}/{game['rom']}" if game else "nothing selected since pixelweb started"
-            add(Check("frontend", True, f"frontend's game: {selected}"))
+            if game is None:
+                shown = "nothing since pixelweb started"
+            else:
+                shown = f"{game['system']}/{game['rom']}" if game["rom"] else f"the {game['system']} system marquee"
+            add(Check("frontend", True, f"last marquee shown: {shown}"))
 
         if info.get("ledStrip"):
             try:

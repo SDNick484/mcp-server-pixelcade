@@ -6,11 +6,13 @@ say pixelweb does, each behavior tagged with its assumption (assumptions.py):
 
   - every control is a GET; flags are bare query words (PX-GET-API)
   - ``/info`` reports a V2 LED marquee with Pulse strips (PX-INFO)
-  - ``/currentgame`` answers ``mame%digdug``, as pixelweb 8.0.17 does (PX-CURRENTGAME)
+  - ``/currentgame`` answers ``mame%digdug``, as pixelweb 8.0.17 does, and follows every
+    /arcade/stream and /console/stream (``snes%``), whoever sends it, even while locked (PX-CURRENTGAME)
   - the documented /arcade/list, /still/list and /animations/list answer 404, as on 8.0.17 (PX-LISTS)
   - ``POST /api/images/list`` {"name": <folder>} lists a folder's files; a missing folder answers 400,
     an empty name ``null`` (PX-IMAGES-LIST)
-  - other controls answer 200 with a short body, unknown paths 404 (PX-REPLIES: a guess)
+  - other controls answer 200 with an empty body (``/defaultmarquee``: ``{"status": "ok"}``), unknown
+    paths 404 "404 page not found", as on 8.0.17 (PX-REPLIES)
   - ``/ledstrip/brightness/<n>`` changes what ``/ledstrip/getbrightness`` reports (PX-BRIGHTNESS);
     ``hang`` makes a path never answer, as getbrightness does with no strips connected
   - ``?nointerrupt`` locks the marquee until ``/attract/stop``: other display calls answer 200 but
@@ -175,8 +177,19 @@ class FakePixelweb:
             return 200, "text/plain", "OK"
         if path.startswith(CONTROL_PREFIXES) or path == "/widgets/stop":
             with self._lock:
+                # ASSUMPTION PX-CURRENTGAME: game and system marquees, from anyone, set it; text and
+                # animations don't. Seen updating during the screensaver, so the lock doesn't stop it.
+                parts = [unquote(x) for x in path.split("/")[1:]]
+                if parts[:2] == ["arcade", "stream"] and len(parts) >= 4:
+                    self.current_game = f"{parts[2]}%{parts[3]}"
+                elif parts[:2] == ["console", "stream"] and len(parts) >= 3:
+                    self.current_game = f"{parts[2]}%"
                 self._display(raw, path)
-            return 200, "text/plain", "OK"
+            # ASSUMPTION PX-REPLIES: on 8.0.17 controls answer 200 with an empty body, even for missing
+            # artwork; /defaultmarquee answers {"status": "ok"}.
+            if path == "/defaultmarquee":
+                return 200, "application/json", '{"status": "ok"}'
+            return 200, "text/plain", ""
         return 404, "text/plain", "404 page not found"
 
     def handle_post(self, raw: str, body: bytes) -> tuple[int, str, str]:

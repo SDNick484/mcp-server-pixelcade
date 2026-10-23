@@ -24,6 +24,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Annotated, Literal, TypeVar
 
 from mcp.server import MCPServer
@@ -35,6 +36,7 @@ from . import config as cfg
 from .client import (
     DEFAULT_MARQUEE_SINCE,
     Artwork,
+    CurrentGame,
     PixelcadeClient,
     PixelcadeError,
     Query,
@@ -51,6 +53,49 @@ log = logging.getLogger(__name__)
 _client: PixelcadeClient | None = None
 
 
+# ASSUMPTION PX-CURRENTGAME: pixelweb's /currentgame is whichever game or system marquee was shown last,
+# by the frontend's hooks or by this server, so it can't say what the *frontend* last showed once we've
+# shown something. The server keeps that itself: before each of its own marquees it reads /currentgame,
+# and anything there that it didn't put there came from the frontend.
+@dataclass
+class _Marquees:
+    ours: tuple[str, str | None] | None = None  # the game or system marquee this server showed last
+    frontend: CurrentGame | None = None  # the last one seen that this server didn't show
+
+
+_marquees = _Marquees()
+
+
+def _key(system: str, rom: str | None) -> tuple[str, str | None]:
+    return system.lower(), rom.lower() if rom else None
+
+
+async def _current() -> CurrentGame | None:
+    try:
+        return parse_current_game(await client().get(["currentgame"]))
+    except PixelcadeError as exc:
+        log.warning("currentgame failed: %s", exc)
+        return None
+
+
+async def _remember_frontend() -> CurrentGame | None:
+    cur = await _current()
+    if cur is not None and _key(cur["system"], cur["rom"]) != _marquees.ours:
+        _marquees.frontend = cur
+    return cur
+
+
+async def _show_marquee(system: str, rom: str | None, segments: list[str], query: Query, detail: str) -> ActionResult:
+    """_send for game and system marquees, which also move pixelweb's /currentgame. A dry run shows
+    nothing, so it has nothing to remember and sends nothing at all."""
+    if not client().settings.dry_run:
+        await _remember_frontend()
+    result = await _send(segments, query, detail)
+    if result["outcome"] == "done":
+        _marquees.ours = _key(system, rom)
+    return result
+
+
 def client() -> PixelcadeClient:
     assert _client is not None, "server lifespan has not started"
     return _client
@@ -61,8 +106,9 @@ def client() -> PixelcadeClient:
 # shared httpx client, which pools connections between calls.
 @asynccontextmanager
 async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
-    global _client
+    global _client, _marquees
     _client = PixelcadeClient(load_settings())
+    _marquees = _Marquees()
     try:
         yield
     finally:
@@ -317,7 +363,7 @@ async def show_game_marquee(
         query += [("l", loops), ("event", "FEScroll")]  # ASSUMPTION PX-QUEUE
     query += _pulse_flags(pulse)
     verb = f"Queued {s}/{r} for {loops}" if loops else f"Showing {s}/{r}"
-    return await _send(["arcade", "stream", s, r], query, verb)
+    return await _show_marquee(s, r, ["arcade", "stream", s, r], query, verb)
 
 
 @mcp.tool(title="Show a system marquee", annotations=_SET)
@@ -325,24 +371,40 @@ async def show_console_marquee(system: System, fallback_text: FallbackText = Non
     """Show a system/console marquee (e.g. 'snes', 'genesis', 'mame'), as when browsing the system list."""
     s = _check(cfg.path_segment, system, "system", 60)
     query: Query = [("t", _check(_one_line, fallback_text))] if fallback_text else []
-    return await _send(["console", "stream", s], query, f"Showing the {s} system marquee")
+    return await _show_marquee(s, None, ["console", "stream", s], query, f"Showing the {s} system marquee")
 
 
 @mcp.tool(title="Restore the frontend's marquee", annotations=_SET)
 async def show_current_game() -> ActionResult:
-    """Put back the marquee for the game currently selected in the arcade frontend, e.g. after showing text.
+    """Put back the marquee the arcade frontend last showed (the game or system selected there), e.g. after
+    showing text or another game's marquee.
 
     After the cabinet's screensaver has run, this is the last game the screensaver showed, not the one the
     user had selected, until they scroll in the frontend again.
-    """  # ASSUMPTION PX-CURRENTGAME
-    c = client()
-    game = parse_current_game(await c.get(["currentgame"]))
-    if game is None:
+    """
+    cur = await _current()
+    # Shown after our last marquee means the frontend (or the screensaver) moved on: use that.
+    newer = cur is not None and _key(cur["system"], cur["rom"]) != _marquees.ours
+    target: CurrentGame | None = cur if newer else _marquees.frontend
+    if target is None:
+        if cur is None:
+            raise PixelcadeError(
+                "Nothing has been shown in the frontend since pixelweb started, so there is nothing to restore. "
+                "show_default_marquee shows the default marquee instead."
+            )
         raise PixelcadeError(
-            "No game has been selected in the frontend since pixelweb started, so there is nothing to restore. "
-            "show_default_marquee shows the default marquee instead."
+            "The last marquee was one this server showed, and the frontend hasn't shown one since this server "
+            "started, so its game isn't known. Scrolling in the frontend puts its marquee back; or use "
+            "show_default_marquee."
         )
-    return await _send(["arcade", "stream", game["system"], game["rom"]], [], f"Showing {game['system']}/{game['rom']}")
+    system, rom = target["system"], target["rom"]
+    if rom:
+        result = await _send(["arcade", "stream", system, rom], [], f"Showing {system}/{rom}")
+    else:
+        result = await _send(["console", "stream", system], [], f"Showing the {system} system marquee")
+    if result["outcome"] == "done":
+        _marquees.ours = None  # what's showing is the frontend's again
+    return result
 
 
 @mcp.tool(title="Show the default marquee", annotations=_SET)
@@ -534,7 +596,7 @@ async def stop_widgets() -> ActionResult:
 @mcp.tool(title="Blank the marquee", annotations=_SET)
 async def blank_display() -> ActionResult:
     """Turn the marquee black (it stays on; the next marquee or text replaces the black screen)."""
-    return await _send(["arcade", "stream", "black", "dummy"], [], "The marquee is blank")
+    return await _show_marquee("black", "dummy", ["arcade", "stream", "black", "dummy"], [], "The marquee is blank")
 
 
 # --- Pulse LED strips, rings and matrices ------------------------------------

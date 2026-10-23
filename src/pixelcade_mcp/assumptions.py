@@ -65,14 +65,17 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
     ),
     Assumption(
         "PX-CURRENTGAME",
-        "/currentgame returns the frontend's last selected game as 'system,rom' (the hook script's reading) or "
-        "'system%rom' (the docs').",
-        f"{SCRIPTS} game-selected; {DOCS}",
+        "/currentgame returns the last game or system marquee shown, by anyone (the frontend's hooks, the "
+        "screensaver, this server), as 'system%rom', or 'system%' after a system marquee; text and animations "
+        "don't change it. (The game-selected hook's comment says 'system,rom'.)",
+        f"{SCRIPTS} game-selected; {DOCS}; hardware",
         "medium",
         status="hardware-verified",
-        note=SEEN + "'neogeo%eightman': the docs' and achievements hook's '%', not the comma game-selected's "
-        "comment says. The parser splits at whichever separator comes first, so a comma in a ROM name survives. "
-        "During the random-video screensaver it changed with each video (mystwaru, eightman, circusc), so "
+        note=SEEN + "'neogeo%eightman' ('%', not a comma). It followed every marquee: scrolling gave "
+        "genesis%Old-Towers; show_text and play_animation left it; show_console_marquee snes made it 'snes%'; "
+        "show_game_marquee galaga made it mame%galaga. The claim used to say it was the frontend's selection; "
+        "it isn't, so the server remembers the frontend's itself (server._Marquees). During the random-video "
+        "screensaver it changed with each video (mystwaru, eightman, circusc), so "
         "the screensaver's game-selected events update it even while attract mode holds the marquee: after the "
         "screensaver, it names the last video's game, not the user's selection.",
     ),
@@ -99,10 +102,14 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
     ),
     Assumption(
         "PX-REPLIES",
-        "Controls answer 200 with a short body; an endpoint this pixelweb doesn't have answers 404.",
-        "pixelweb is a Go net/http server",
+        'Controls answer 200 with an empty body (/defaultmarquee: {"status": "ok"}), even when the '
+        "artwork is missing; an endpoint this pixelweb doesn't have answers 404 '404 page not found'.",
+        "pixelweb is a Go net/http server; hardware",
         "low",
-        note="Our guess. Status codes for missing artwork are unknown too.",
+        status="hardware-verified",
+        note=SEEN + "every control call answered 200 with nothing in the body; /arcade/stream/mame/nosuchgame "
+        "answered 200 too, so a reply can't say whether artwork exists (list_artwork can). The claim used to "
+        "say 'a short body'.",
     ),
     Assumption(
         "PX-TEXT",
