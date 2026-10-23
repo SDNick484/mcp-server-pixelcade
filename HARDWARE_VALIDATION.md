@@ -89,7 +89,7 @@ contradicted here (see 5).
 
 ## 3. Text
 
-Confirms PX-TEXT, PX-QUEUE.
+Confirms PX-TEXT, PX-QUEUE, PX-HOLD.
 
 1. `call show_text text="GAME NIGHT 7PM" color=cyan`.
 2. Two lines: `call show_text text=$'HIGH SCORE\n999,990' lines=2 scroll=fixed color=yellow`. Expect two
@@ -98,6 +98,9 @@ Confirms PX-TEXT, PX-QUEUE.
 4. Queue: `call show_game_marquee system=mame rom=pacman loops=5`, then right away
    `call show_text text=NEXT loops=1`: Pac-Man for ~5 s, then the text. Then `call blank_display`, which
    interrupts (PX-QUEUE).
+5. `call show_text text=HELLO loops=-1`: sends the text, then the same with `l=99999`; expect it to
+   stay up (not one pass then blank, which is what `l=-1` does) until the next call (PX-HOLD). Repeat
+   with a game running: it should replace the frontend's marquee and stay.
 
 ## 4. Widgets
 

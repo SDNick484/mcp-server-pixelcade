@@ -464,8 +464,8 @@ async def show_text(
             default=None,
             ge=-1,
             le=100,
-            description="Scroll this many times, then return to what was showing before; -1 keeps scrolling "
-            "until something else is shown. Omit for Pixelcade's default.",
+            description="Show it this many times (queued behind anything already queued), then the marquee goes "
+            "blank; -1 keeps it up until something else is shown. Omit to show it now, once.",
         ),
     ] = None,
     scroll: Annotated[
@@ -490,7 +490,7 @@ async def show_text(
         query.append(("c", _check(cfg.text_color, color)))
     if speed is not None:
         query.append(("s", speed))
-    if loops is not None:
+    if loops is not None and loops != -1:
         query.append(("l", loops))
     if scroll != "auto":
         query.append(("scroll", "true" if scroll == "scroll" else "false"))
@@ -500,7 +500,28 @@ async def show_text(
         query.append(("blink", blink_ms))
     if left_justify:
         query.append(("left", "true"))
+    if loops == -1:
+        return await _hold(["text"], query, "Showing the text until something else is shown")
     return await _send(["text"], query, "Showing the text")
+
+
+# ASSUMPTION PX-HOLD: on 8.0.17, l=-1 (documented as "infinite until next command") showed text once and
+# went blank. What holds is l=99999, but any l= joins the queue, so behind the frontend's own l=99999 game
+# marquee it would never play. So: a plain call first (interrupts and clears the queue), then the same
+# with l=99999 to hold it. On hardware the pair showed at once, with no gap between them.
+HOLD_LOOPS = 99999
+
+
+async def _hold(segments: list[str], query: Query, detail: str) -> ActionResult:
+    first = await _send(segments, query, detail)
+    second = await _send(segments, [*query, ("l", HOLD_LOOPS)], detail)
+    return ActionResult(
+        pixelcade=second["pixelcade"],
+        outcome=second["outcome"],
+        detail=second["detail"],
+        sent=first["sent"] + second["sent"],
+        warnings=first["warnings"] + second["warnings"],
+    )
 
 
 @mcp.tool(title="Play an animation", annotations=_ACT)

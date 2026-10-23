@@ -225,7 +225,21 @@ async def test_show_text(mcp_client, fake):
     )
     assert not r.is_error
     # A real newline becomes pixelweb's literal backslash-n (encoded %5Cn).
-    assert fake.last == "/text?t=HIGH%20SCORE%5Cn999%2C990&c=ff6d00&l=-1&scroll=false&lines=2"
+    base = "/text?t=HIGH%20SCORE%5Cn999%2C990&c=ff6d00&scroll=false&lines=2"
+    assert fake.requests == [base, base + "&l=99999"]  # loops=-1 is the hold pair (PX-HOLD)
+
+
+async def test_show_text_forever_holds_it(mcp_client, fake):
+    # ASSUMPTION PX-HOLD: l=-1 shows text once on hardware; a plain call then l=99999 holds it.
+    r = (await call(mcp_client, "show_text", text="HELLO", loops=-1)).structured_content
+    assert r["sent"] == ["GET /text?t=HELLO", "GET /text?t=HELLO&l=99999"]
+    assert fake.requests == ["/text?t=HELLO", "/text?t=HELLO&l=99999"]
+    assert "-1" not in "".join(fake.requests)
+
+
+async def test_show_text_forever_in_a_dry_run(dry_client, fake):
+    r = (await call(dry_client, "show_text", text="HELLO", loops=-1)).structured_content
+    assert (r["outcome"], len(r["sent"]), fake.requests) == ("dry_run", 2, [])
 
 
 async def test_show_text_blink_only_for_short_text(mcp_client, fake):

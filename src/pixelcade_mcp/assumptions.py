@@ -136,6 +136,18 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "scrolled once; blank_display (no l) interrupted.",
     ),
     Assumption(
+        "PX-HOLD",
+        "l=-1, documented as 'infinite until next command', shows text once and then the marquee goes blank; "
+        "l=99999 holds it until interrupted, and a plain call followed by the same call with l=99999 shows it "
+        "at once (the plain call interrupts and clears the queue) and holds it.",
+        f"{DOCS} (Looping & Queue System); hardware",
+        "medium",
+        status="hardware-verified",
+        note=SEEN + "text?t=HELLO&l=-1 showed once, then blank; HOLD ONE with l=99999 replaced Galaga and stayed; "
+        "the plain-then-l=99999 pair showed at once and stayed, and a long message sent the same way kept "
+        "scrolling for 30 s; scroll=false text stayed. Short text doesn't scroll (it fits). Not yet seen: the pair while the frontend's own l=99999 game marquee holds the queue.",
+    ),
+    Assumption(
         "PX-FRONTEND",
         "EmulationStation's hooks call /console/stream/<system>/?event=FEScroll and "
         "/arcade/stream/<system>/<rom>?event=FEScroll as you scroll (game-selected skips the call when the game "
