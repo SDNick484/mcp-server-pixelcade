@@ -1,6 +1,7 @@
 # Hardware validation (Pixelcade LED, V2 board)
 
-Steps 1 to 5 have run on a real Pixelcade (V2 board, pixelweb 8.0.17, 2026-10-22); the rest hasn't yet.
+Steps 1 to 5 and 7 have run on a real Pixelcade (V2 board, pixelweb 8.0.17, 2026-10-22); step 6 (Pulse)
+waits for strips.
 The server was built from Pixelcade's API
 reference and its Batocera hook scripts, and tested against a wire-level fake pixelweb
 (`src/pixelcade_mcp/sim/fake_pixelweb.py`, real HTTP). Each step depends only on the ones before it and
@@ -21,7 +22,7 @@ at steps 1, 5 and 6 by number, so keep the numbering if you edit this file.
 | The screensaver's attract lock; `stop_widgets` releasing it | verified on hardware | 5 |
 | `show_default_marquee` (pixelweb 8.0.14+) | verified on hardware | 2 |
 | Pulse effects, fills, clearing, brightness cap | verified against simulator only | 6 |
-| Dry run and ActionResult | verified against simulator only | 7 |
+| Dry run and ActionResult | verified on hardware | 7 |
 | Log redaction (shared logsafe.py) | verified on hardware | 1 |
 
 ## Before you start

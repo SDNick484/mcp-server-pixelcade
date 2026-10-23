@@ -5,9 +5,9 @@ and **Pixelcade Pulse** lighting (WS2812B strips, speaker rings and matrices on 
 MCP client such as Claude show game and system marquees, scroll text, run arcade-themed clocks and other
 widgets, and drive Pulse lighting effects.
 
-> **Status: early, hardware testing under way.** Tested against a wire-level fake pixelweb and end to end
-> over stdio; on a real V2 board (pixelweb 8.0.17), `doctor` and `get_status` work, the rest isn't confirmed
-> yet: see [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) and the [verification table](#verification-status).
+> **Status: early, tested on hardware except Pulse.** On a real V2 board (pixelweb 8.0.17, Batocera 43)
+> every marquee, text, widget and frontend tool has been checked, plus dry run; Pulse waits for strips. See
+> [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) and the [verification table](#verification-status).
 
 This is not an official Pixelcade project.
 
