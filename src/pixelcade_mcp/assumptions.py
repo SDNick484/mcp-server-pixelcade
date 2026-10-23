@@ -145,7 +145,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         status="hardware-verified",
         note=SEEN + "text?t=HELLO&l=-1 showed once, then blank; HOLD ONE with l=99999 replaced Galaga and stayed; "
         "the plain-then-l=99999 pair showed at once and stayed, and a long message sent the same way kept "
-        "scrolling for 30 s; scroll=false text stayed. Short text doesn't scroll (it fits). Not yet seen: the pair while the frontend's own l=99999 game marquee holds the queue.",
+        "scrolling for 30 s; scroll=false text stayed. Short text doesn't scroll (it fits). Held text stayed "
+        "until scrolling in the frontend replaced it. Not yet seen: the pair while the frontend's own l=99999 "
+        "game marquee holds the queue.",
     ),
     Assumption(
         "PX-FRONTEND",
@@ -155,7 +157,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "launch, so whatever this server shows lasts until the next frontend event.",
         f"{SCRIPTS} system-selected, game-selected, game-start",
         "high",
-        note="Read in the scripts the installer puts on Batocera (pixelcade-linux, last changed 2026-06).",
+        status="hardware-verified",
+        note=SEEN + "scrolling in the frontend replaced held text; launching a game (through mcp-server-batocera) "
+        "ended a locked clock and showed the game's marquee. Hook scripts from pixelcade-linux (2026-06).",
     ),
     Assumption(
         "PX-WIDGETS",
@@ -176,9 +180,11 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         f"{DOCS} (attract mode: 'prevents interruption by other API calls'); {SCRIPTS} screensaver-start, "
         "screensaver-stop",
         "medium",
-        note="The hook calls are read in the scripts. Unknown: whether ignored calls still answer 200 (the "
-        "simulator assumes so), whether queued (l=N) calls wait for the lock, and whether Pulse calls are locked "
-        "too (the simulator doesn't lock them).",
+        status="hardware-verified",
+        note=SEEN + "a clock shown with lock=true stayed through frontend scrolling, and show_text over it "
+        "answered 200 but didn't show. During the random-video screensaver the marquee stayed in attract mode, "
+        "didn't follow the videos and ignored show_text; after stop_widgets it followed the videos. Unknown: "
+        "whether queued (l=N) calls wait for the lock, and whether Pulse calls are locked too.",
     ),
     Assumption(
         "PX-DEFAULT-MARQUEE",
