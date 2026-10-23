@@ -64,8 +64,13 @@ From pixelcade.org/developers and Pixelcade's Batocera hook scripts (github.com/
 `batocera/scripts/`); **not yet verified on hardware**:
 - All control is GET. Flags are bare (`?nogif`, `?nointerrupt`, `?cycle`); the hook scripts encode
   spaces as `%20` (RFC 3986 unreserved characters only), so URLs are built by hand, not with `params=`.
-- `/currentgame` returns `mame,digdug` per the game-selected hook (docs and the achievements hook say
-  `mame%digdug`); both parse, split at whichever separator comes first.
+- The one POST is a read: `/api/images/list` with `{"name": "<folder>"}`, the endpoint pixelweb's own web
+  page uses (`list_artwork`, PX-IMAGES-LIST, seen on hardware). The documented `/arcade/list`,
+  `/still/list` and `/animations/list` are 404 on 8.0.17 (PX-LISTS, contradicted).
+- `/currentgame` is the last game or system marquee shown **by anyone** (frontend, screensaver, us):
+  `mame%digdug`, or `snes%` after a system marquee. So `show_current_game` can't just read it: the server
+  remembers the frontend's own (`server._Marquees`), reading it before each marquee it shows.
+- Controls answer 200 with an empty body, even for missing artwork (PX-REPLIES).
 - Text line breaks are the literal two characters `\n` inside `t=`.
 - Queueing: `l=N` (N >= 1) queues; a call without `l` interrupts and clears the queue. Scripted queue
   items carry `event=FEScroll`.
@@ -78,8 +83,7 @@ From pixelcade.org/developers and Pixelcade's Batocera hook scripts (github.com/
 - `/defaultmarquee` exists from pixelweb 8.0.14 (release notes only, PX-DEFAULT-MARQUEE). Pixelweb 8.x is
   otherwise Sidekick work; the API we use is unchanged.
 
-Unknowns to confirm on the real board: the response format of `/arcade/list`, `/still/list` and
-`/animations/list` (parsed tolerantly), status codes for missing artwork, and whether `/news` exists.
+Unknowns to confirm on the real board: whether `/news` exists.
 
 ## Commands
 

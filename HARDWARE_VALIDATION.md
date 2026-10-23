@@ -1,6 +1,8 @@
 # Hardware validation (Pixelcade LED, V2 board)
 
-Nothing in this repo has run against a real Pixelcade yet. The server was built from Pixelcade's API
+Steps 1 to 5 and 7 have run on a real Pixelcade (V2 board, pixelweb 8.0.17, 2026-10-22); step 6 (Pulse)
+waits for strips.
+The server was built from Pixelcade's API
 reference and its Batocera hook scripts, and tested against a wire-level fake pixelweb
 (`src/pixelcade_mcp/sim/fake_pixelweb.py`, real HTTP). Each step depends only on the ones before it and
 names the assumptions it confirms (ids, claims and sources are in `src/pixelcade_mcp/assumptions.py`).
@@ -12,16 +14,16 @@ at steps 1, 5 and 6 by number, so keep the numbering if you edit this file.
 
 | Feature | Status | Step |
 | --- | --- | --- |
-| `doctor` (TCP, /info, frontend game, Pulse) | verified against simulator only | 1 |
-| Game, system and animation marquees; `show_current_game` | verified against simulator only | 2 |
-| `show_text` options and queueing | verified against simulator only | 3 |
-| Widgets (themed clocks, weather, stocks, sports, attract) | verified against simulator only | 4 |
-| Interplay with the frontend's own marquee changes | verified against simulator only | 5 |
-| The screensaver's attract lock; `stop_widgets` releasing it | verified against simulator only | 5 |
-| `show_default_marquee` (pixelweb 8.0.14+) | verified against simulator only | 2 |
+| `doctor` (TCP, /info, frontend game, Pulse) | verified on hardware (Pulse with strips not yet) | 1 |
+| Game, system and animation marquees; `show_current_game` | verified on hardware | 2 |
+| `show_text` options and queueing | verified on hardware | 3 |
+| Widgets (themed clocks, weather, stocks, sports, attract) | verified on hardware | 4 |
+| Interplay with the frontend's own marquee changes | verified on hardware | 5 |
+| The screensaver's attract lock; `stop_widgets` releasing it | verified on hardware | 5 |
+| `show_default_marquee` (pixelweb 8.0.14+) | verified on hardware | 2 |
 | Pulse effects, fills, clearing, brightness cap | verified against simulator only | 6 |
-| Dry run and ActionResult | verified against simulator only | 7 |
-| Log redaction (shared logsafe.py) | verified against simulator only | 1 |
+| Dry run and ActionResult | verified on hardware | 7 |
+| Log redaction (shared logsafe.py) | verified on hardware | 1 |
 
 ## Before you start
 
@@ -61,7 +63,8 @@ Confirms PX-INFO.
 
 ## 2. Marquees
 
-Confirms PX-GET-API, PX-CURRENTGAME, PX-REPLIES, PX-LISTS.
+Confirms PX-GET-API, PX-CURRENTGAME, PX-REPLIES, PX-IMAGES-LIST, PX-DEFAULT-MARQUEE; PX-LISTS was
+contradicted here (see 5).
 
 1. `call show_game_marquee system=mame rom=galaga`: the Galaga marquee appears. **Record** the
    `(pixelweb: ...)` reply in `detail` (PX-REPLIES).
@@ -71,9 +74,12 @@ Confirms PX-GET-API, PX-CURRENTGAME, PX-REPLIES, PX-LISTS.
 3. `call show_game_marquee system=mame rom=nosuchgame fallback_text="NO ART"`: **record** what shows
    and the HTTP status (`curl -si ".../arcade/stream/mame/nosuchgame" | head -1`).
 4. `call show_console_marquee system=snes`, then `call play_animation name=0rain` (or a name from step 5).
-5. `curl -s http://192.168.1.20:8080/arcade/list | head -c 300 > captures/arcade-list.txt`, and the same for
-   `/still/list` and `/animations/list`. **Record** the format (PX-LISTS), then try
-   `call list_artwork kind=arcade contains=pac`.
+5. Artwork lists. The documented `/arcade/list`, `/still/list` and `/animations/list` answer 404 on
+   pixelweb 8.0.17 (PX-LISTS, contradicted); pixelweb's own web page lists a folder with
+   `POST /api/images/list` (PX-IMAGES-LIST):
+   `curl -s -X POST -H Content-Type:application/json -d '{"name":"mame"}' http://192.168.1.20:8080/api/images/list | head -c 300`.
+   Then `call list_artwork folder=mame contains=pac`, `folder=animations limit=5`, and `folder=still`
+   (expect a refusal naming the folder, without the arcade's file path).
 6. Scroll to a game in the frontend, then `curl -s http://192.168.1.20:8080/currentgame`. **Record** the
    exact format (PX-CURRENTGAME). `call show_text text=HI`, then `call show_current_game`: the frontend's
    marquee comes back. If you have a game whose ROM name has a comma (`..., The (USA)`), select it and
@@ -84,7 +90,7 @@ Confirms PX-GET-API, PX-CURRENTGAME, PX-REPLIES, PX-LISTS.
 
 ## 3. Text
 
-Confirms PX-TEXT, PX-QUEUE.
+Confirms PX-TEXT, PX-QUEUE, PX-HOLD.
 
 1. `call show_text text="GAME NIGHT 7PM" color=cyan`.
 2. Two lines: `call show_text text=$'HIGH SCORE\n999,990' lines=2 scroll=fixed color=yellow`. Expect two
@@ -93,6 +99,9 @@ Confirms PX-TEXT, PX-QUEUE.
 4. Queue: `call show_game_marquee system=mame rom=pacman loops=5`, then right away
    `call show_text text=NEXT loops=1`: Pac-Man for ~5 s, then the text. Then `call blank_display`, which
    interrupts (PX-QUEUE).
+5. `call show_text text=HELLO loops=-1`: sends the text, then the same with `l=99999`; expect it to
+   stay up (not one pass then blank, which is what `l=-1` does) until the next call (PX-HOLD). Repeat
+   with a game running: it should replace the frontend's marquee and stay.
 
 ## 4. Widgets
 

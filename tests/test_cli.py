@@ -8,6 +8,7 @@ import json
 import pytest
 
 from pixelcade_mcp import cli
+from pixelcade_mcp.assumptions import unverified
 from pixelcade_mcp.config import Settings
 from pixelcade_mcp.doctor import STEP, run_doctor
 
@@ -28,9 +29,10 @@ def env(fake, monkeypatch):
 def test_doctor_ok(env, capsys):
     code, out, _ = run(["doctor"], capsys)
     assert code == 0 and out.rstrip().endswith("OK")
-    assert "LED 128x32, V2 board True" in out and "frontend's game: mame/digdug" in out
+    assert "LED 128x32, V2 board True" in out and "last marquee shown: mame/digdug" in out
     assert "90 LEDs, brightness 64" in out
-    assert "Not yet confirmed on hardware" in out and "PX-ZONES" in out
+    pending = unverified()  # any still-unverified id, so recording results doesn't break this test
+    assert not pending or ("Not yet confirmed on hardware" in out and pending[0].id in out)
 
 
 def test_doctor_notes_a_pixelweb_too_old_for_the_default_marquee(env, capsys):
@@ -41,6 +43,14 @@ def test_doctor_notes_a_pixelweb_too_old_for_the_default_marquee(env, capsys):
     code, out, _ = run(["doctor"], capsys)
     assert code == 0 and "pixelweb 7.9.9 (show_default_marquee needs 8.0.14+)" in out
     assert "/defaultmarquee" not in env.requests
+
+
+def test_doctor_when_configured_strips_dont_answer(env, capsys):
+    # ASSUMPTION PX-BRIGHTNESS: strips configured in pixelweb, none connected.
+    env.hang.add("/ledstrip/getbrightness")
+    code, out, _ = run(["doctor"], capsys)
+    assert code == 1 and "x  pulse     Pulse strips configured (90 LEDs), but: pixelweb didn't answer" in out
+    assert "If no strips are connected and powered yet, that's expected" in out
 
 
 def test_doctor_flags_brightness_above_the_cap(env, capsys, monkeypatch):
@@ -98,7 +108,8 @@ async def test_simulate_writes_a_config_and_echoes_requests(tmp_path, capsys):
     import httpx
 
     async with httpx.AsyncClient() as c:
-        assert (await c.get(f"{url}/text?t=HI")).text == "OK"
+        r = await c.get(f"{url}/text?t=HI")
+        assert (r.status_code, r.text) == (200, "")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

@@ -5,9 +5,9 @@ and **Pixelcade Pulse** lighting (WS2812B strips, speaker rings and matrices on 
 MCP client such as Claude show game and system marquees, scroll text, run arcade-themed clocks and other
 widgets, and drive Pulse lighting effects.
 
-> **Status: early / untested on hardware.** Tested against a wire-level fake pixelweb and end to end over
-> stdio, but not yet run against a real Pixelcade: see [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md)
-> and the [verification table](#verification-status).
+> **Status: early, tested on hardware except Pulse.** On a real V2 board (pixelweb 8.0.17, Batocera 43)
+> every marquee, text, widget and frontend tool has been checked, plus dry run; Pulse waits for strips. See
+> [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) and the [verification table](#verification-status).
 
 This is not an official Pixelcade project.
 
@@ -113,7 +113,7 @@ mirrored networking. A DHCP reservation plus the IP address is the dependable ch
 | Tool                   | What it does                                                                                   |
 | ---------------------- | ---------------------------------------------------------------------------------------------- |
 | `get_status`           | Reachability, hardware/firmware/software versions, the frontend's selected game, Pulse state   |
-| `list_artwork`         | Arcade, still or animation names pixelweb has, with a substring filter                         |
+| `list_artwork`         | The marquees in one folder (a system, `console`, `animations`, `user`): names, still/animated |
 | `list_pulse_effects`   | Pulse effect names by category, per-game/per-system name patterns, and zone names              |
 | `show_game_marquee`    | A game's marquee by system + ROM name; still/animated choice, optional queueing and fallback text |
 | `show_console_marquee` | A system marquee, e.g. `snes`                                                                   |
@@ -152,7 +152,7 @@ scripts send.
 Every tool that changes the display returns the same structured result as the sibling servers:
 
 ```json
-{ "pixelcade": "Arcade marquee", "outcome": "done", "detail": "Showing the text (pixelweb: OK)",
+{ "pixelcade": "Arcade marquee", "outcome": "done", "detail": "Showing the text",
   "sent": ["GET /text?t=GAME%20NIGHT&c=cyan"], "warnings": [] }
 ```
 
@@ -183,21 +183,23 @@ Every pixelweb behavior the code relies on is listed in `src/pixelcade_mcp/assum
 source and how sure we are; the code cites each id where it depends on it, and
 [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) has the step that confirms it. *high* means documented
 and used the same way by Pixelcade's own scripts; *medium* means documented only; *low* means our own
-guess. Nothing has been confirmed on hardware yet.
+guess. Hardware results so far are from pixelweb 8.0.17 on a V2 board (2026-10-22).
 
 | Assumption | Confidence | Status |
 |---|---|---|
-| `PX-GET-API` | high | simulator-only |
-| `PX-INFO` | medium | simulator-only |
-| `PX-CURRENTGAME` | medium | simulator-only |
-| `PX-LISTS` | low | simulator-only |
-| `PX-REPLIES` | low | simulator-only |
-| `PX-TEXT` | medium | simulator-only |
-| `PX-QUEUE` | medium | simulator-only |
-| `PX-FRONTEND` | high | simulator-only |
-| `PX-WIDGETS` | medium | simulator-only |
-| `PX-ATTRACT-LOCK` | medium | simulator-only |
-| `PX-DEFAULT-MARQUEE` | low | simulator-only |
+| `PX-GET-API` | high | hardware-verified |
+| `PX-INFO` | medium | hardware-verified |
+| `PX-CURRENTGAME` | medium | hardware-verified |
+| `PX-LISTS` | low | hardware-contradicted |
+| `PX-IMAGES-LIST` | high | hardware-verified |
+| `PX-REPLIES` | low | hardware-verified |
+| `PX-TEXT` | medium | hardware-verified |
+| `PX-QUEUE` | medium | hardware-verified |
+| `PX-HOLD` | medium | hardware-verified |
+| `PX-FRONTEND` | high | hardware-verified |
+| `PX-WIDGETS` | medium | hardware-verified |
+| `PX-ATTRACT-LOCK` | medium | hardware-verified |
+| `PX-DEFAULT-MARQUEE` | low | hardware-verified |
 | `PX-ZONES` | medium | simulator-only |
 | `PX-BRIGHTNESS` | medium | simulator-only |
 | `PX-POWER` | high | simulator-only |

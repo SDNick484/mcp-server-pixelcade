@@ -21,8 +21,10 @@ validated, percent-encoded segments, so no argument can name another endpoint.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Annotated, Literal, TypeVar
 
 from mcp.server import MCPServer
@@ -33,13 +35,15 @@ from typing_extensions import TypedDict
 from . import config as cfg
 from .client import (
     DEFAULT_MARQUEE_SINCE,
+    Artwork,
+    CurrentGame,
     PixelcadeClient,
     PixelcadeError,
     Query,
     Status,
     build_path,
+    parse_artwork,
     parse_current_game,
-    parse_name_list,
 )
 from .config import ClockStyle, SportsLeague, load_settings
 from .effects import EFFECTS, PATTERNS, EffectCategory
@@ -47,6 +51,49 @@ from .effects import EFFECTS, PATTERNS, EffectCategory
 log = logging.getLogger(__name__)
 
 _client: PixelcadeClient | None = None
+
+
+# ASSUMPTION PX-CURRENTGAME: pixelweb's /currentgame is whichever game or system marquee was shown last,
+# by the frontend's hooks or by this server, so it can't say what the *frontend* last showed once we've
+# shown something. The server keeps that itself: before each of its own marquees it reads /currentgame,
+# and anything there that it didn't put there came from the frontend.
+@dataclass
+class _Marquees:
+    ours: tuple[str, str | None] | None = None  # the game or system marquee this server showed last
+    frontend: CurrentGame | None = None  # the last one seen that this server didn't show
+
+
+_marquees = _Marquees()
+
+
+def _key(system: str, rom: str | None) -> tuple[str, str | None]:
+    return system.lower(), rom.lower() if rom else None
+
+
+async def _current() -> CurrentGame | None:
+    try:
+        return parse_current_game(await client().get(["currentgame"]))
+    except PixelcadeError as exc:
+        log.warning("currentgame failed: %s", exc)
+        return None
+
+
+async def _remember_frontend() -> CurrentGame | None:
+    cur = await _current()
+    if cur is not None and _key(cur["system"], cur["rom"]) != _marquees.ours:
+        _marquees.frontend = cur
+    return cur
+
+
+async def _show_marquee(system: str, rom: str | None, segments: list[str], query: Query, detail: str) -> ActionResult:
+    """_send for game and system marquees, which also move pixelweb's /currentgame. A dry run shows
+    nothing, so it has nothing to remember and sends nothing at all."""
+    if not client().settings.dry_run:
+        await _remember_frontend()
+    result = await _send(segments, query, detail)
+    if result["outcome"] == "done":
+        _marquees.ours = _key(system, rom)
+    return result
 
 
 def client() -> PixelcadeClient:
@@ -59,8 +106,9 @@ def client() -> PixelcadeClient:
 # shared httpx client, which pools connections between calls.
 @asynccontextmanager
 async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
-    global _client
+    global _client, _marquees
     _client = PixelcadeClient(load_settings())
+    _marquees = _Marquees()
     try:
         yield
     finally:
@@ -146,8 +194,9 @@ async def _send(segments: list[str], query: Query, detail: str) -> ActionResult:
 @mcp.tool(title="Get Pixelcade status", annotations=_READ)
 async def get_status() -> Status:
     """Report whether the Pixelcade is reachable, its hardware and software versions, the game last
-    selected in the arcade frontend, and Pulse LED strip state (whether configured, pixel count,
-    brightness, and the brightness cap this server enforces).
+    selected in the arcade frontend, whether animated marquees are on, and Pulse LED strip state
+    (whether configured, pixel count, brightness, the brightness cap this server enforces, and whether
+    the board answers: pulse.responding false means Pulse tools won't work, e.g. no strips connected).
 
     When unreachable, reachable is false and error says why; nothing else is known then.
     """
@@ -155,38 +204,69 @@ async def get_status() -> Status:
 
 
 class ArtworkList(TypedDict):
-    kind: str
-    total: int
-    matches: int
-    names: list[str]
+    folder: str
+    total: int  # distinct names in the folder
+    matches: int  # after the contains/kind filters
+    artwork: list[Artwork]
     truncated: bool
-
-
-Contains = Annotated[
-    str | None,
-    Field(default=None, max_length=60, description="Case-insensitive substring filter, e.g. 'pac'."),
-]
 
 
 @mcp.tool(title="List marquee artwork", annotations=_READ)
 async def list_artwork(
-    kind: Annotated[
-        Literal["arcade", "stills", "animations"],
-        Field(description="arcade: MAME game names with artwork; stills: still images; animations: animation names."),
+    folder: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=60,
+            description="A Batocera system (mame, snes, nes, neogeo, ...) for its games' marquees; 'console' for "
+            "system marquees; 'animations' for play_animation names; 'user' for the user's own uploads.",
+        ),
     ],
-    contains: Contains = None,
+    contains: Annotated[
+        str | None,
+        Field(default=None, max_length=60, description="Case-insensitive substring filter, best matches first."),
+    ] = None,
+    kind: Annotated[
+        Literal["any", "still", "animated"],
+        Field(description="any, or only names that have a still (PNG/JPG) or an animated (GIF) version."),
+    ] = "any",
     limit: Annotated[int, Field(ge=1, le=500, description="Maximum names to return.")] = 100,
 ) -> ArtworkList:
-    """List artwork names pixelweb has, optionally filtered. Use it to check a name before showing it:
-    arcade names work as the rom for show_game_marquee with system 'mame', animation names for play_animation.
+    """List the artwork pixelweb has in one folder, one row per name, saying whether a still and an animated
+    version exist. A name works as the rom for show_game_marquee with that system (or as play_animation's name
+    for folder 'animations'). Names come in more than one style: MAME short names (pacman) and full titles
+    (Galaga (Midway, Set 1)); the frontend uses the ROM file's name, so check with contains first.
     """
-    path = {"arcade": ["arcade", "list"], "stills": ["still", "list"], "animations": ["animations", "list"]}[kind]
-    names = parse_name_list(await client().get(path))
-    total = len(names)
+    # ASSUMPTION PX-IMAGES-LIST: the endpoint pixelweb's own artwork browser uses. The documented
+    # /arcade/list, /still/list and /animations/list don't exist (PX-LISTS).
+    f = _check(cfg.path_segment, folder, "folder", 60)
+    try:
+        data = await client().post_json(["api", "images", "list"], {"name": f})
+    except PixelcadeError as exc:
+        if exc.status != 400:
+            raise
+        raise PixelcadeError(
+            f"There's no artwork folder named '{f}' on the arcade. Folders are named after Batocera systems "
+            "(mame, snes, ...), plus console, animations and user.",
+            status=400,
+        ) from exc
+    rows = parse_artwork(data)
+    total = len(rows)
     if contains:
         needle = contains.strip().lower()
-        names = [n for n in names if needle in n.lower()]
-    return ArtworkList(kind=kind, total=total, matches=len(names), names=names[:limit], truncated=len(names) > limit)
+        rows = sorted((r for r in rows if needle in r["name"].lower()), key=lambda r: _rank(r["name"], needle))
+    if kind != "any":
+        rows = [r for r in rows if r[kind]]
+    return ArtworkList(folder=f, total=total, matches=len(rows), artwork=rows[:limit], truncated=len(rows) > limit)
+
+
+def _rank(name: str, needle: str) -> tuple[int, str]:
+    """Best matches first: the exact name, then names starting with it, then a word starting with it,
+    then anything containing it ('pac' puts pacman before 20pacgal); alphabetical within each."""
+    n = name.lower()
+    words = re.split(r"[^a-z0-9]+", n)
+    tier = 0 if n == needle else 1 if n.startswith(needle) else 2 if any(w.startswith(needle) for w in words) else 3
+    return tier, n
 
 
 class EffectCatalog(TypedDict):
@@ -245,7 +325,8 @@ async def show_game_marquee(
         Literal["auto", "still", "animated"],
         Field(
             description="auto: animated then still if both exist; still: PNG only; animated: GIF only. "
-            "Pixelcade 8's 'static PNG marquees only' setting, if the user turned it on, may override animated."
+            "If get_status says animated_marquees is false (Pixelcade's 'static PNG marquees only' "
+            "setting), stills are shown instead."
         ),
     ] = "auto",
     loops: Annotated[
@@ -282,7 +363,7 @@ async def show_game_marquee(
         query += [("l", loops), ("event", "FEScroll")]  # ASSUMPTION PX-QUEUE
     query += _pulse_flags(pulse)
     verb = f"Queued {s}/{r} for {loops}" if loops else f"Showing {s}/{r}"
-    return await _send(["arcade", "stream", s, r], query, verb)
+    return await _show_marquee(s, r, ["arcade", "stream", s, r], query, verb)
 
 
 @mcp.tool(title="Show a system marquee", annotations=_SET)
@@ -290,20 +371,40 @@ async def show_console_marquee(system: System, fallback_text: FallbackText = Non
     """Show a system/console marquee (e.g. 'snes', 'genesis', 'mame'), as when browsing the system list."""
     s = _check(cfg.path_segment, system, "system", 60)
     query: Query = [("t", _check(_one_line, fallback_text))] if fallback_text else []
-    return await _send(["console", "stream", s], query, f"Showing the {s} system marquee")
+    return await _show_marquee(s, None, ["console", "stream", s], query, f"Showing the {s} system marquee")
 
 
 @mcp.tool(title="Restore the frontend's marquee", annotations=_SET)
 async def show_current_game() -> ActionResult:
-    """Put back the marquee for the game currently selected in the arcade frontend, e.g. after showing text."""
-    c = client()
-    game = parse_current_game(await c.get(["currentgame"]))
-    if game is None:
+    """Put back the marquee the arcade frontend last showed (the game or system selected there), e.g. after
+    showing text or another game's marquee.
+
+    After the cabinet's screensaver has run, this is the last game the screensaver showed, not the one the
+    user had selected, until they scroll in the frontend again.
+    """
+    cur = await _current()
+    # Shown after our last marquee means the frontend (or the screensaver) moved on: use that.
+    newer = cur is not None and _key(cur["system"], cur["rom"]) != _marquees.ours
+    target: CurrentGame | None = cur if newer else _marquees.frontend
+    if target is None:
+        if cur is None:
+            raise PixelcadeError(
+                "Nothing has been shown in the frontend since pixelweb started, so there is nothing to restore. "
+                "show_default_marquee shows the default marquee instead."
+            )
         raise PixelcadeError(
-            "No game has been selected in the frontend since pixelweb started, so there is nothing to restore. "
-            "show_default_marquee shows the default marquee instead."
+            "The last marquee was one this server showed, and the frontend hasn't shown one since this server "
+            "started, so its game isn't known. Scrolling in the frontend puts its marquee back; or use "
+            "show_default_marquee."
         )
-    return await _send(["arcade", "stream", game["system"], game["rom"]], [], f"Showing {game['system']}/{game['rom']}")
+    system, rom = target["system"], target["rom"]
+    if rom:
+        result = await _send(["arcade", "stream", system, rom], [], f"Showing {system}/{rom}")
+    else:
+        result = await _send(["console", "stream", system], [], f"Showing the {system} system marquee")
+    if result["outcome"] == "done":
+        _marquees.ours = None  # what's showing is the frontend's again
+    return result
 
 
 @mcp.tool(title="Show the default marquee", annotations=_SET)
@@ -363,8 +464,8 @@ async def show_text(
             default=None,
             ge=-1,
             le=100,
-            description="Scroll this many times, then return to what was showing before; -1 keeps scrolling "
-            "until something else is shown. Omit for Pixelcade's default.",
+            description="Show it this many times (queued behind anything already queued), then the marquee goes "
+            "blank; -1 keeps it up until something else is shown. Omit to show it now, once.",
         ),
     ] = None,
     scroll: Annotated[
@@ -389,7 +490,7 @@ async def show_text(
         query.append(("c", _check(cfg.text_color, color)))
     if speed is not None:
         query.append(("s", speed))
-    if loops is not None:
+    if loops is not None and loops != -1:
         query.append(("l", loops))
     if scroll != "auto":
         query.append(("scroll", "true" if scroll == "scroll" else "false"))
@@ -399,18 +500,41 @@ async def show_text(
         query.append(("blink", blink_ms))
     if left_justify:
         query.append(("left", "true"))
+    if loops == -1:
+        return await _hold(["text"], query, "Showing the text until something else is shown")
     return await _send(["text"], query, "Showing the text")
+
+
+# ASSUMPTION PX-HOLD: on 8.0.17, l=-1 (documented as "infinite until next command") showed text once and
+# went blank. What holds is l=99999, but any l= joins the queue, so behind the frontend's own l=99999 game
+# marquee it would never play. So: a plain call first (interrupts and clears the queue), then the same
+# with l=99999 to hold it. On hardware the pair showed at once, with no gap between them.
+HOLD_LOOPS = 99999
+
+
+async def _hold(segments: list[str], query: Query, detail: str) -> ActionResult:
+    first = await _send(segments, query, detail)
+    second = await _send(segments, [*query, ("l", HOLD_LOOPS)], detail)
+    return ActionResult(
+        pixelcade=second["pixelcade"],
+        outcome=second["outcome"],
+        detail=second["detail"],
+        sent=first["sent"] + second["sent"],
+        warnings=first["warnings"] + second["warnings"],
+    )
 
 
 @mcp.tool(title="Play an animation", annotations=_ACT)
 async def play_animation(
-    name: Annotated[str, Field(min_length=1, max_length=100, description="An animation name from list_artwork.")],
+    name: Annotated[
+        str, Field(min_length=1, max_length=100, description="An animation name from list_artwork folder='animations'.")
+    ],
     loops: Annotated[
         int | None,
         Field(default=None, ge=1, le=50, description="Queue it and play this many times; omit to play now."),
     ] = None,
 ) -> ActionResult:
-    """Play one of Pixelcade's built-in animations on the marquee (see list_artwork kind='animations')."""
+    """Play one of Pixelcade's built-in animations on the marquee (see list_artwork folder='animations')."""
     n = _check(cfg.path_segment, name, "animation name", 100)
     query: Query = [("l", loops)] if loops else []
     return await _send(["animations", "stream", n], query, f"Playing animation {n}")
@@ -493,7 +617,7 @@ async def stop_widgets() -> ActionResult:
 @mcp.tool(title="Blank the marquee", annotations=_SET)
 async def blank_display() -> ActionResult:
     """Turn the marquee black (it stays on; the next marquee or text replaces the black screen)."""
-    return await _send(["arcade", "stream", "black", "dummy"], [], "The marquee is blank")
+    return await _show_marquee("black", "dummy", ["arcade", "stream", "black", "dummy"], [], "The marquee is blank")
 
 
 # --- Pulse LED strips, rings and matrices ------------------------------------

@@ -99,9 +99,50 @@ async def test_get_status(mcp_client):
 
 
 async def test_list_artwork_filters_and_truncates(mcp_client, fake):
-    fake.routes["/arcade/list"] = (200, '["pacman","mspacman","galaga","pacland"]')
-    r = (await call(mcp_client, "list_artwork", kind="arcade", contains="PAC", limit=2)).structured_content
-    assert r == {"kind": "arcade", "total": 4, "matches": 3, "names": ["pacman", "mspacman"], "truncated": True}
+    # ASSUMPTION PX-IMAGES-LIST
+    r = (await call(mcp_client, "list_artwork", folder="mame", contains="PAC", limit=2)).structured_content
+    assert r == {
+        "folder": "mame",
+        "total": 10,
+        "matches": 3,  # pacland (pacland.png and pacland_2.png), pacman, then mspacman: starts-with first
+        "artwork": [
+            {"name": "pacland", "still": True, "animated": False},
+            {"name": "pacman", "still": True, "animated": True},
+        ],
+        "truncated": True,
+    }
+    assert fake.posts == [("/api/images/list", '{"name":"mame"}')]
+
+
+async def test_list_artwork_ranks_best_matches_first(mcp_client, fake):
+    fake.folders["mame"] = ["20pacgal.png", "pacman.png", "Pac-Man (Midway).png", "mspacman.png", "pac.png"]
+    r = (await call(mcp_client, "list_artwork", folder="mame", contains="pac")).structured_content
+    assert [a["name"] for a in r["artwork"]] == ["pac", "Pac-Man (Midway)", "pacman", "20pacgal", "mspacman"]
+
+
+async def test_list_artwork_kind_filter(mcp_client, fake):
+    r = (await call(mcp_client, "list_artwork", folder="mame", kind="animated")).structured_content
+    assert [a["name"] for a in r["artwork"]] == ["digdug", "pacman"]
+
+
+async def test_list_artwork_missing_folder(mcp_client, fake):
+    r = await call(mcp_client, "list_artwork", folder="still")
+    assert r.is_error and "no artwork folder named 'still'" in text(r)
+    assert "/userdata" not in text(r)  # pixelweb's error names a path on the arcade; ours doesn't
+
+
+@pytest.mark.parametrize("folder", ["..", "mame/../..", "a\\b"])
+async def test_list_artwork_refuses_paths(mcp_client, fake, folder):
+    # The folder name becomes a directory on the arcade, so it must be one plain name.
+    r = await call(mcp_client, "list_artwork", folder=folder)
+    assert r.is_error and fake.posts == []
+
+
+async def test_documented_list_endpoints_are_gone(fake):
+    # ASSUMPTION PX-LISTS: contradicted on pixelweb 8.0.17, and the fake answers the same way.
+    from pixelcade_mcp.sim.fake_pixelweb import REMOVED_LISTS
+
+    assert all(fake.handle(p)[0] == 404 for p in REMOVED_LISTS)
 
 
 async def test_list_pulse_effects_needs_no_device(mcp_client, fake):
@@ -138,49 +179,44 @@ async def test_show_console_marquee(mcp_client, fake):
 
 async def test_show_current_game(mcp_client, fake):
     r = await call(mcp_client, "show_current_game")
-    assert r.structured_content["detail"] == "Showing mame/digdug (pixelweb: OK)"
+    assert r.structured_content["detail"] == "Showing mame/digdug"
     assert fake.requests == ["/currentgame", "/arcade/stream/mame/digdug"]
 
 
-async def test_show_current_game_with_nothing_selected(mcp_client, fake):
+async def test_show_current_game_after_our_own_marquee(mcp_client, fake):
+    # ASSUMPTION PX-CURRENTGAME: our marquee moves /currentgame to mame%galaga, so the server must
+    # remember that the frontend's was mame%digdug.
+    await call(mcp_client, "show_game_marquee", system="mame", rom="galaga")
+    assert fake.current_game == "mame%galaga"
+    r = await call(mcp_client, "show_current_game")
+    assert r.structured_content["sent"] == ["GET /arcade/stream/mame/digdug"]
+
+
+async def test_show_current_game_follows_the_frontend_after_us(mcp_client, fake):
+    await call(mcp_client, "show_game_marquee", system="mame", rom="galaga")
+    fake.handle("/arcade/stream/snes/Super%20Metroid?event=FEScroll")  # the user scrolls
+    r = await call(mcp_client, "show_current_game")
+    assert r.structured_content["sent"] == ["GET /arcade/stream/snes/Super%20Metroid"]
+
+
+async def test_show_current_game_restores_a_system_marquee(mcp_client, fake):
+    fake.current_game = "snes%"  # the frontend's system list
+    await call(mcp_client, "show_text", text="HI")  # text doesn't move /currentgame
+    r = await call(mcp_client, "show_current_game")
+    assert r.structured_content["sent"] == ["GET /console/stream/snes"]
+
+
+async def test_show_current_game_when_only_ours_is_known(mcp_client, fake):
+    fake.current_game = ""
+    await call(mcp_client, "show_game_marquee", system="mame", rom="galaga")
+    r = await call(mcp_client, "show_current_game")
+    assert r.is_error and "the frontend's game" not in text(r) and "Scrolling in the frontend" in text(r)
+
+
+async def test_show_current_game_with_nothing_shown(mcp_client, fake):
     fake.routes["/currentgame"] = (200, "")
     r = await call(mcp_client, "show_current_game")
     assert r.is_error and "nothing to restore" in text(r) and "show_default_marquee" in text(r)
-
-
-async def test_show_default_marquee(mcp_client, fake):
-    # ASSUMPTION PX-DEFAULT-MARQUEE
-    r = (await call(mcp_client, "show_default_marquee")).structured_content
-    assert (r["outcome"], r["sent"]) == ("done", ["GET /defaultmarquee"])
-    assert fake.showing == "/defaultmarquee"
-
-
-async def test_show_default_marquee_on_pixelweb_older_than_8_0_14(mcp_client, fake):
-    fake.routes["/defaultmarquee"] = (404, "404 page not found")
-    r = await call(mcp_client, "show_default_marquee")
-    assert r.is_error and "new in Pixelcade 8.0.14" in text(r) and "show_console_marquee" in text(r)
-
-
-async def test_screensaver_lock_ignores_calls_until_stop_widgets(mcp_client, fake):
-    # ASSUMPTION PX-ATTRACT-LOCK: Pixelcade's screensaver-start hook locks the marquee in attract mode.
-    fake.screensaver()
-    r = (await call(mcp_client, "show_text", text="HI")).structured_content
-    assert r["outcome"] == "done"  # pixelweb still answers OK...
-    assert fake.showing == "/attract?nointerrupt"  # ...but the marquee didn't change
-    await call(mcp_client, "pulse_fill", zone="left_strip", color="red")  # Pulse isn't locked
-    await call(mcp_client, "stop_widgets")
-    assert (fake.showing, fake.locked) == (None, False)
-    await call(mcp_client, "show_text", text="HI")
-    assert fake.showing == "/text?t=HI"
-
-
-async def test_locked_widget_warns_and_holds_the_marquee(mcp_client, fake):
-    r = (await call(mcp_client, "show_widget", widget="clock", lock=True)).structured_content
-    assert r["warnings"] and "stop_widgets" in r["warnings"][0]
-    await call(mcp_client, "show_game_marquee", system="mame", rom="galaga")
-    assert fake.showing is not None and fake.showing.startswith("/clock?nointerrupt")
-    unlocked = (await call(mcp_client, "show_widget", widget="clock")).structured_content
-    assert unlocked["warnings"] == []
 
 
 async def test_show_text(mcp_client, fake):
@@ -189,7 +225,21 @@ async def test_show_text(mcp_client, fake):
     )
     assert not r.is_error
     # A real newline becomes pixelweb's literal backslash-n (encoded %5Cn).
-    assert fake.last == "/text?t=HIGH%20SCORE%5Cn999%2C990&c=ff6d00&l=-1&scroll=false&lines=2"
+    base = "/text?t=HIGH%20SCORE%5Cn999%2C990&c=ff6d00&scroll=false&lines=2"
+    assert fake.requests == [base, base + "&l=99999"]  # loops=-1 is the hold pair (PX-HOLD)
+
+
+async def test_show_text_forever_holds_it(mcp_client, fake):
+    # ASSUMPTION PX-HOLD: l=-1 shows text once on hardware; a plain call then l=99999 holds it.
+    r = (await call(mcp_client, "show_text", text="HELLO", loops=-1)).structured_content
+    assert r["sent"] == ["GET /text?t=HELLO", "GET /text?t=HELLO&l=99999"]
+    assert fake.requests == ["/text?t=HELLO", "/text?t=HELLO&l=99999"]
+    assert "-1" not in "".join(fake.requests)
+
+
+async def test_show_text_forever_in_a_dry_run(dry_client, fake):
+    r = (await call(dry_client, "show_text", text="HELLO", loops=-1)).structured_content
+    assert (r["outcome"], len(r["sent"]), fake.requests) == ("dry_run", 2, [])
 
 
 async def test_show_text_blink_only_for_short_text(mcp_client, fake):
@@ -231,7 +281,8 @@ async def test_widget_rejects_parameters_for_another_widget(mcp_client, fake):
 async def test_stop_widgets_and_blank(mcp_client, fake):
     await call(mcp_client, "stop_widgets")
     await call(mcp_client, "blank_display")
-    assert fake.requests == ["/attract/stop", "/arcade/stream/black/dummy"]
+    # A marquee reads /currentgame first, to remember the frontend's (PX-CURRENTGAME).
+    assert fake.requests == ["/attract/stop", "/currentgame", "/arcade/stream/black/dummy"]
 
 
 # --- Pulse ---------------------------------------------------------------------
@@ -305,7 +356,7 @@ async def test_action_result(mcp_client, fake):
     assert r == {
         "pixelcade": "Test marquee",
         "outcome": "done",
-        "detail": "Showing the text (pixelweb: OK)",
+        "detail": "Showing the text",
         "sent": ["GET /text?t=HI&c=green"],
         "warnings": [],
     }

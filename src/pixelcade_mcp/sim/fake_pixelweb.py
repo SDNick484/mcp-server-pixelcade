@@ -6,10 +6,15 @@ say pixelweb does, each behavior tagged with its assumption (assumptions.py):
 
   - every control is a GET; flags are bare query words (PX-GET-API)
   - ``/info`` reports a V2 LED marquee with Pulse strips (PX-INFO)
-  - ``/currentgame`` answers ``mame,digdug`` (PX-CURRENTGAME)
-  - list endpoints answer a JSON array (PX-LISTS: a guess; the client accepts several formats)
-  - other controls answer 200 with a short body, unknown paths 404 (PX-REPLIES: a guess)
-  - ``/ledstrip/brightness/<n>`` changes what ``/ledstrip/getbrightness`` reports (PX-BRIGHTNESS)
+  - ``/currentgame`` answers ``mame%digdug``, as pixelweb 8.0.17 does, and follows every
+    /arcade/stream and /console/stream (``snes%``), whoever sends it, even while locked (PX-CURRENTGAME)
+  - the documented /arcade/list, /still/list and /animations/list answer 404, as on 8.0.17 (PX-LISTS)
+  - ``POST /api/images/list`` {"name": <folder>} lists a folder's files; a missing folder answers 400,
+    an empty name ``null`` (PX-IMAGES-LIST)
+  - other controls answer 200 with an empty body (``/defaultmarquee``: ``{"status": "ok"}``), unknown
+    paths 404 "404 page not found", as on 8.0.17 (PX-REPLIES)
+  - ``/ledstrip/brightness/<n>`` changes what ``/ledstrip/getbrightness`` reports (PX-BRIGHTNESS);
+    ``hang`` makes a path never answer, as getbrightness does with no strips connected
   - ``?nointerrupt`` locks the marquee until ``/attract/stop``: other display calls answer 200 but
     change nothing, and Pulse calls aren't locked (PX-ATTRACT-LOCK). ``screensaver()`` does what
     Pixelcade's Batocera screensaver-start hook does.
@@ -43,6 +48,7 @@ INFO: dict[str, Any] = {
     "hardwareID": "PIXL0020",
     "v2board": True,
     "softwareVersion": "8.0.17-sim",
+    "noAnimatedMarquees": False,
     "resolution": "128x32",
     "bindPort": 8080,
     "hasLEDStripSupport": True,
@@ -65,11 +71,19 @@ CONTROL_PREFIXES = (
     "/ledstrip/",
 )
 STOPS = ("/attract/stop", "/widgets/stop")
-LISTS = {
-    "/arcade/list": ["pacman", "mspacman", "galaga", "digdug", "dkong", "sf2", "1942", "pacland"],
-    "/still/list": ["pixelcade", "batocera", "default-marquee"],
-    "/animations/list": ["0rain", "explosion", "fireworks", "pacghosts"],
-}
+# ASSUMPTION PX-IMAGES-LIST: what /userdata/system/pixelcade/<folder> holds, as /api/images/list sees it.
+# Mirrors what the real one showed: PNG and GIF side by side, full titles next to MAME names, _<n> variants.
+ROOT = "/userdata/system/pixelcade"
+FOLDERS: dict[str, list[str]] = {
+    "mame": ["pacman.png", "pacman.gif", "mspacman.png", "galaga.png", "Galaga (Midway, Set 1).png", "digdug.png",
+             "digdug.gif", "digdug1.png", "dkong.png", "sf2.png", "1942.png", "pacland.png", "pacland_2.png"],
+    "snes": ["Super Mario World (USA).png", "Super Mario World 2 - Yoshi's Island (USA) (Rev 1).png"],
+    "console": ["mame.png", "snes.png", "nes.png", "- Arcade.png"],
+    "animations": ["0rain.png", "explosion.png", "fireworks.png", "pacghosts.png"],
+    "user": ["custom-logo.gif"],
+}  # fmt: skip
+# ASSUMPTION PX-LISTS: the documented list endpoints. pixelweb 8.0.17 answers 404 to all three.
+REMOVED_LISTS = ("/arcade/list", "/still/list", "/animations/list")
 
 
 class _QuietHTTPServer(ThreadingHTTPServer):
@@ -82,12 +96,15 @@ class _QuietHTTPServer(ThreadingHTTPServer):
 class FakePixelweb:
     def __init__(self, host: str = "127.0.0.1", port: int = 0) -> None:
         self.info = dict(INFO)
-        self.current_game = "mame,digdug"
+        self.current_game = "mame%digdug"
         self.brightness = 64
         self.routes: dict[str, tuple[int, str]] = {}  # raw path (no query) -> (status, body)
         self.slow_s = 0.0
+        self.hang: set[str] = set()  # raw paths (no query) that never answer, e.g. Pulse with no strips
         self.drop = False
         self.requests: list[str] = []
+        self.posts: list[tuple[str, str]] = []  # (raw path, body) of each POST
+        self.folders = {k: list(v) for k, v in FOLDERS.items()}
         self.showing: str | None = None
         self.locked = False
         self.on_request: Callable[[str], None] | None = None  # simulate prints what the marquee shows
@@ -152,8 +169,6 @@ class FakePixelweb:
                 "application/json",
                 json.dumps({"brightness": self.brightness, "percentage": pct, "success": True}),
             )
-        if path in LISTS:
-            return 200, "application/json", json.dumps(LISTS[path])
         if path.startswith("/ledstrip/brightness/"):
             try:
                 self.brightness = max(0, min(255, int(unquote(path.rsplit("/", 1)[-1]))))
@@ -162,9 +177,41 @@ class FakePixelweb:
             return 200, "text/plain", "OK"
         if path.startswith(CONTROL_PREFIXES) or path == "/widgets/stop":
             with self._lock:
+                # ASSUMPTION PX-CURRENTGAME: game and system marquees, from anyone, set it; text and
+                # animations don't. Seen updating during the screensaver, so the lock doesn't stop it.
+                parts = [unquote(x) for x in path.split("/")[1:]]
+                if parts[:2] == ["arcade", "stream"] and len(parts) >= 4:
+                    self.current_game = f"{parts[2]}%{parts[3]}"
+                elif parts[:2] == ["console", "stream"] and len(parts) >= 3:
+                    self.current_game = f"{parts[2]}%"
                 self._display(raw, path)
-            return 200, "text/plain", "OK"
+            # ASSUMPTION PX-REPLIES: on 8.0.17 controls answer 200 with an empty body, even for missing
+            # artwork; /defaultmarquee answers {"status": "ok"}.
+            if path == "/defaultmarquee":
+                return 200, "application/json", '{"status": "ok"}'
+            return 200, "text/plain", ""
         return 404, "text/plain", "404 page not found"
+
+    def handle_post(self, raw: str, body: bytes) -> tuple[int, str, str]:
+        """(status, content type, body) for one POST: only the artwork browser's list."""
+        with self._lock:
+            self.requests.append(raw)
+            self.posts.append((raw, body.decode(errors="replace")))
+        if raw.split("?", 1)[0] != "/api/images/list":
+            return 404, "text/plain", "404 page not found"
+        try:
+            name = json.loads(body or b"{}").get("name", "")
+        except (json.JSONDecodeError, AttributeError):
+            return 400, "text/plain; charset=utf-8", "bad request"
+        if not name:
+            return 200, "application/json", "null"
+        if name not in self.folders:
+            return 400, "text/plain; charset=utf-8", f"open {ROOT}/{name}: no such file or directory"
+        entries = [
+            {"name": f, "system": name, "urlPath": f"/images/{name}/{f}", "imagePath": f"{ROOT}/{name}/{f}"}
+            for f in self.folders[name]
+        ]
+        return 200, "application/json", json.dumps(entries, indent=1)
 
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         fake = self
@@ -173,13 +220,25 @@ class FakePixelweb:
             protocol_version = "HTTP/1.1"
 
             def do_GET(self) -> None:  # noqa: N802 (http.server's naming)
+                self._answer(None)
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                self._answer(self.rfile.read(length) if length else b"")
+
+            def _answer(self, body: bytes | None) -> None:
                 if fake.slow_s:
                     time.sleep(fake.slow_s)
+                if self.path.split("?", 1)[0] in fake.hang:
+                    # ASSUMPTION PX-BRIGHTNESS: seen on hardware, /ledstrip/getbrightness never answers when
+                    # strips are configured but not connected. Hold the request until the client gives up.
+                    time.sleep(30)
+                    return
                 if fake.drop:
                     self.close_connection = True
                     self.connection.shutdown(socket.SHUT_RDWR)
                     return
-                status, ctype, text = fake.handle(self.path)
+                status, ctype, text = fake.handle(self.path) if body is None else fake.handle_post(self.path, body)
                 data = text.encode()
                 self.send_response(status)
                 self.send_header("Content-Type", ctype)

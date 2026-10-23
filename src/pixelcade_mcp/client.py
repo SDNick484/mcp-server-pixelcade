@@ -66,7 +66,7 @@ def build_path(segments: Sequence[str], query: Query = ()) -> str:
 # --- Shapes returned to the model -----------------------------------------
 class CurrentGame(TypedDict):
     system: str
-    rom: str
+    rom: str | None  # None: a system marquee (/console/stream), which pixelweb records as "snes%"
 
 
 class Pulse(TypedDict):
@@ -75,6 +75,9 @@ class Pulse(TypedDict):
     pixels: int | None
     brightness: int | None
     max_brightness: int
+    # False: strips are configured in pixelweb but the board didn't answer (none connected, or no power);
+    # brightness is then pixelweb's setting. None: not asked (strips not configured, or pixelweb unreachable).
+    responding: bool | None
 
 
 class Status(TypedDict):
@@ -90,25 +93,29 @@ class Status(TypedDict):
     software_version: str | None
     current_game: CurrentGame | None
     pulse: Pulse
+    animated_marquees: bool | None  # False: pixelweb shows still (PNG) marquees only; None: not reported
 
 
 # ASSUMPTION PX-CURRENTGAME
 def parse_current_game(body: str) -> CurrentGame | None:
-    """``/currentgame`` -> {system, rom}.
+    """``/currentgame`` -> {system, rom}: the last game or system marquee pixelweb showed.
 
-    Batocera's game-selected hook reads it as "mame,digdug"; the API docs and
-    the achievements hook show "mame%digdug". Accept either, splitting at
-    whichever separator comes first: system names have neither, but ROM names
-    can have commas ("Zelda, The"). An empty answer means nothing was selected
-    since pixelweb started.
+    pixelweb 8.0.17 answers "mame%digdug", or "snes%" after a system marquee (rom None); the
+    game-selected hook's comment says "mame,digdug". Accept either, splitting at whichever
+    separator comes first: system names have neither, but ROM names can have commas ("Zelda,
+    The"). An empty answer means nothing was shown since pixelweb started.
     """
     v = body.strip().strip('"')
     cuts = [i for i in (v.find(","), v.find("%")) if i > 0]
     if not cuts:
         return None
     system, rom = v[: min(cuts)].strip(), v[min(cuts) + 1 :].strip()
-    return CurrentGame(system=system, rom=rom) if system and rom else None
+    return CurrentGame(system=system, rom=rom or None) if system else None
 
+
+# How long get_status and doctor wait for the Pulse board: it doesn't answer when strips are configured
+# but not connected (PX-BRIGHTNESS), so waiting the full PIXELCADE_TIMEOUT would stall every status call.
+PULSE_STATUS_TIMEOUT_S = 2.0
 
 # ASSUMPTION PX-DEFAULT-MARQUEE: new in pixelweb 8.0.14, and only in the release notes.
 DEFAULT_MARQUEE_SINCE = (8, 0, 14)
@@ -120,29 +127,41 @@ def parse_version(text: str | None) -> tuple[int, ...] | None:
     return tuple(int(n) for n in m.group(1).split(".")) if m else None
 
 
-# ASSUMPTION PX-LISTS: the format isn't documented, so this is deliberately tolerant.
-def parse_name_list(body: str) -> list[str]:
-    """The list endpoints' format isn't documented, so take what comes:
-    a JSON array, a JSON object whose values (or keys) are names, or plain
-    text with one name per line or comma-separated."""
-    text = body.strip()
-    if not text:
-        return []
-    try:
-        data: Any = json.loads(text)
-    except json.JSONDecodeError:
-        sep = "\n" if "\n" in text else ","
-        return [s.strip() for s in text.split(sep) if s.strip()]
-    names: list[str] = []
-    if isinstance(data, list):
-        names = [str(x) for x in data if isinstance(x, (str, int))]
-    elif isinstance(data, dict):
-        for value in data.values():
-            if isinstance(value, list):
-                names.extend(str(x) for x in value if isinstance(x, (str, int)))
-        if not names:
-            names = [str(k) for k in data]
-    return [n.strip() for n in names if n.strip()]
+class Artwork(TypedDict):
+    name: str  # what show_game_marquee takes as rom (or play_animation as name)
+    still: bool  # a PNG/JPG exists
+    animated: bool  # a GIF exists
+
+
+STILL_EXTS = {"png", "jpg", "jpeg", "bmp"}
+ANIMATED_EXTS = {"gif"}
+_VARIANT = re.compile(r"_\d+$")
+
+
+# ASSUMPTION PX-IMAGES-LIST: entries are {name, system, urlPath, imagePath}; name is a file name.
+def parse_artwork(data: Any) -> list[Artwork]:
+    """/api/images/list's file entries -> one row per name, sorted case-insensitively.
+
+    Like pixelweb's own artwork browser, a name is the file name without its extension and
+    without a trailing _<n> variant ("pacman_2.png" is pacman), so digdug.png and digdug.gif
+    are one game with both a still and an animation. Other file types are skipped.
+    """
+    rows: dict[str, Artwork] = {}
+    for entry in data if isinstance(data, list) else []:
+        file = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(file, str) or "." not in file:
+            continue
+        stem, ext = file.rsplit(".", 1)
+        ext = ext.lower()
+        if ext not in STILL_EXTS | ANIMATED_EXTS:
+            continue
+        name = _VARIANT.sub("", stem).strip()
+        if not name:
+            continue
+        row = rows.setdefault(name.lower(), Artwork(name=name, still=False, animated=False))
+        row["still"] = row["still"] or ext in STILL_EXTS
+        row["animated"] = row["animated"] or ext in ANIMATED_EXTS
+    return sorted(rows.values(), key=lambda r: r["name"].lower())
 
 
 def _str(info: dict[str, Any], key: str) -> str | None:
@@ -175,18 +194,44 @@ class PixelcadeClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def get(self, segments: Sequence[str], query: Query = ()) -> str:
-        """GET a pixelweb endpoint and return the body, or raise PixelcadeError."""
-        path = build_path(segments, query)
-        url = self.settings.url
-        log.info("GET %s", path)
+    async def get(self, segments: Sequence[str], query: Query = (), timeout: float | None = None) -> str:
+        """GET a pixelweb endpoint and return the body, or raise PixelcadeError.
+
+        ``timeout`` shortens the wait for one request (the client's default is PIXELCADE_TIMEOUT).
+        """
+        return await self._request("GET", build_path(segments, query), timeout=timeout)
+
+    async def post_json(self, segments: Sequence[str], body: dict[str, Any]) -> Any:
+        """POST a JSON body and parse the JSON answer. Only for reads pixelweb serves as POST
+        (its artwork browser's /api/images/list); every control is a GET."""
+        text = await self._request("POST", build_path(segments, ()), json_body=body)
         try:
-            resp = await self._http.get(path)
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise PixelcadeError(f"pixelweb sent something that isn't JSON: {text.strip()[:200]!r}") from exc
+
+    async def _request(
+        self, method: str, path: str, json_body: dict[str, Any] | None = None, timeout: float | None = None
+    ) -> str:
+        url = self.settings.url
+        wait = timeout if timeout is not None else self.settings.timeout_s
+        log.info("%s %s", method, path)
+        try:
+            resp = await self._http.request(
+                method, path, json=json_body, timeout=httpx.Timeout(wait, connect=min(wait, 5.0))
+            )
         except httpx.ConnectError as exc:
             raise PixelcadeError(_connect_advice(url, exc)) from exc
         except httpx.TimeoutException as exc:
+            if path.startswith("/ledstrip/"):
+                # ASSUMPTION PX-BRIGHTNESS: seen on hardware, a Pulse request hangs when pixelweb has strips
+                # configured but none are connected.
+                raise PixelcadeError(
+                    f"pixelweb didn't answer a Pulse request within {wait:g}s. It has Pulse strips configured, "
+                    "but they may not be connected or powered (get_status: pulse.responding)."
+                ) from exc
             raise PixelcadeError(
-                f"pixelweb at {url} didn't answer within {self.settings.timeout_s:g}s. "
+                f"pixelweb at {url} didn't answer within {wait:g}s. "
                 "The arcade may be busy (a write to the marquee's SD card can take a while) or asleep."
             ) from exc
         except httpx.HTTPError as exc:
@@ -203,8 +248,10 @@ class PixelcadeClient:
             raise PixelcadeError(f"pixelweb answered {resp.status_code}: {snippet}", status=resp.status_code)
         return body
 
-    async def get_json(self, segments: Sequence[str], query: Query = ()) -> dict[str, Any]:
-        body = await self.get(segments, query)
+    async def get_json(
+        self, segments: Sequence[str], query: Query = (), timeout: float | None = None
+    ) -> dict[str, Any]:
+        body = await self.get(segments, query, timeout)
         try:
             data = json.loads(body)
         except json.JSONDecodeError as exc:
@@ -232,7 +279,10 @@ class PixelcadeClient:
                 firmware=None,
                 software_version=None,
                 current_game=None,
-                pulse=Pulse(supported=None, enabled=None, pixels=None, brightness=None, max_brightness=cap),
+                pulse=Pulse(
+                    supported=None, enabled=None, pixels=None, brightness=None, max_brightness=cap, responding=None
+                ),
+                animated_marquees=None,
             )
 
         current: CurrentGame | None = None
@@ -243,15 +293,24 @@ class PixelcadeClient:
 
         enabled = _bool(info, "ledStrip")
         brightness = _intval(info, "ledStripBrightness")
+        responding: bool | None = None
         if enabled:
-            # /info's brightness is pixelweb's setting; this one is read from the board.
+            # /info's brightness is pixelweb's setting; this one is read from the board. A short wait:
+            # with strips configured but not connected the board never answers (PX-BRIGHTNESS), and
+            # get_status is the first call a session makes.
             try:
                 # ASSUMPTION PX-BRIGHTNESS
-                live = (await self.get_json(["ledstrip", "getbrightness"])).get("brightness")
+                live = (await self.get_json(["ledstrip", "getbrightness"], timeout=PULSE_STATUS_TIMEOUT_S)).get(
+                    "brightness"
+                )
+                responding = True
                 if isinstance(live, int):
                     brightness = live
             except PixelcadeError as exc:
+                responding = False
                 log.warning("getbrightness failed: %s", exc)
+        # pixelweb 8's "static PNG marquees only" setting (seen in /info on 8.0.17); absent on older versions.
+        no_anim = info.get("noAnimatedMarquees")
 
         return Status(
             url=self.settings.url,
@@ -271,7 +330,9 @@ class PixelcadeClient:
                 pixels=_intval(info, "ledStripNumPixels"),
                 brightness=brightness,
                 max_brightness=cap,
+                responding=responding,
             ),
+            animated_marquees=(not no_anim) if isinstance(no_anim, bool) else None,
         )
 
 

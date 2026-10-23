@@ -30,6 +30,7 @@ Status = Literal["simulator-only", "hardware-verified", "hardware-contradicted"]
 DOCS = "pixelcade.org/developers"
 SCRIPTS = "pixelcade-linux batocera/scripts"
 RELEASES = "pixelcade.org/release-notes"
+SEEN = "Seen 2026-10-22 on a V2 LED (firmware PIXR0023), pixelweb 8.0.17 on Batocera 43, from a Proxmox LXC: "
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,10 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "(?nogif, ?nointerrupt), and spaces in ROM names are sent as %20.",
         f"{DOCS}; {SCRIPTS} (rawurlencode, curl)",
         "high",
-        note="Exactly how the hook scripts call it; our encoding of other characters (%28, %2C) isn't seen yet.",
+        status="hardware-verified",
+        note=SEEN + "the marquee for 'Super Mario World 2 - Yoshi's Island (USA)' showed, sent as ...%20Yoshi%27s"
+        "%20Island%20%28USA%29; flags like ?nogif and scroll=false work. pixelweb matches artwork by exact name: "
+        "the ROM's '(USA) (Rev 1)' found nothing, so the default marquee showed.",
     ),
     Assumption(
         "PX-INFO",
@@ -57,33 +61,59 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "ledStrip, ledStripBrightness and ledStripNumPixels.",
         f"{DOCS} (Device Information example)",
         "medium",
-        note="From the documented example; older pixelweb versions may lack the Pulse fields. The 8.x docs add "
-        "sidekick, sidekick-ids and sidekick-models (companion displays), which this server doesn't use.",
+        status="hardware-verified",
+        note=SEEN + "every field present, plus many more: platform, arcadeFrontend 'Batocera', ledActive, "
+        "noAnimatedMarquees (the 8.x 'static PNG marquees only' setting, now in get_status), sidekick, "
+        "sidekick-ids, sidekick-models, sidekickOnly, centerMatrixResolution, isMiSTer, vestaboard*.",
     ),
     Assumption(
         "PX-CURRENTGAME",
-        "/currentgame returns the frontend's last selected game as 'system,rom' (the hook script's reading) or "
-        "'system%rom' (the docs').",
-        f"{SCRIPTS} game-selected; {DOCS}",
+        "/currentgame returns the last game or system marquee shown, by anyone (the frontend's hooks, the "
+        "screensaver, this server), as 'system%rom', or 'system%' after a system marquee; text and animations "
+        "don't change it. (The game-selected hook's comment says 'system,rom'.)",
+        f"{SCRIPTS} game-selected; {DOCS}; hardware",
         "medium",
-        note="Pixelcade's own scripts disagree: game-selected says 'mame,digdug', achievements says "
-        "'mame%digdug'. The parser splits at whichever separator comes first, so a comma in a ROM name survives. "
-        "Unknown: whether game-selected events during the screensaver (which pixelweb ignores, PX-ATTRACT-LOCK) "
-        "still update it.",
+        status="hardware-verified",
+        note=SEEN + "'neogeo%eightman' ('%', not a comma). It followed every marquee: scrolling gave "
+        "genesis%Old-Towers; show_text and play_animation left it; show_console_marquee snes made it 'snes%'; "
+        "show_game_marquee galaga made it mame%galaga. The claim used to say it was the frontend's selection; "
+        "it isn't, so the server remembers the frontend's itself (server._Marquees); in one session, Galaga "
+        "then show_current_game restored the frontend's gba/SpaceTwins. During the random-video "
+        "screensaver it changed with each video (mystwaru, eightman, circusc), so "
+        "the screensaver's game-selected events update it even while attract mode holds the marquee: after the "
+        "screensaver, it names the last video's game, not the user's selection.",
     ),
     Assumption(
         "PX-LISTS",
         "/arcade/list, /still/list and /animations/list return a list of names.",
         DOCS,
         "low",
-        note="The format isn't documented; the parser accepts a JSON array, a JSON object, or lines/commas.",
+        status="hardware-contradicted",
+        note=SEEN + "all three answer 404 (so do the documented /list/image/<system>, /list/image/all and "
+        "/list/video, which may be LCD-only). list_artwork uses PX-IMAGES-LIST instead.",
+    ),
+    Assumption(
+        "PX-IMAGES-LIST",
+        'POST /api/images/list with the JSON body {"name": "<folder>"} lists /userdata/system/pixelcade/<folder> '
+        "as [{name, system, urlPath, imagePath}], name being a file name; a missing folder answers 400 (plain text "
+        "'open <path>: no such file or directory'), and an empty name answers null.",
+        "pixelweb's own web page (its artwork browser's script); checked on hardware",
+        "high",
+        status="hardware-verified",
+        note=SEEN + "mame: 12,415 files (10,291 PNG, 2,124 GIF; 2 MB of JSON in 0.07 s); animations: 702 PNG; "
+        "console, user and system folders too; 'still' has no folder. The one POST this server sends: a read. "
+        "Undocumented, so a pixelweb update could change it.",
     ),
     Assumption(
         "PX-REPLIES",
-        "Controls answer 200 with a short body; an endpoint this pixelweb doesn't have answers 404.",
-        "pixelweb is a Go net/http server",
+        'Controls answer 200 with an empty body (/defaultmarquee: {"status": "ok"}), even when the '
+        "artwork is missing; an endpoint this pixelweb doesn't have answers 404 '404 page not found'.",
+        "pixelweb is a Go net/http server; hardware",
         "low",
-        note="Our guess. Status codes for missing artwork are unknown too.",
+        status="hardware-verified",
+        note=SEEN + "every control call answered 200 with nothing in the body; /arcade/stream/mame/nosuchgame "
+        "answered 200 too, so a reply can't say whether artwork exists (list_artwork can). The claim used to "
+        "say 'a short body'.",
     ),
     Assumption(
         "PX-TEXT",
@@ -91,7 +121,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "scroll=, lines=, blink= and left=.",
         DOCS,
         "medium",
-        note="Documented; blink's 9-character limit is from the docs too.",
+        status="hardware-verified",
+        note=SEEN + "color, two fixed lines from a literal \\n (sent %5Cn), blink on 'PLAYER 1', and four "
+        "left-justified lines all showed as documented. blink's 9-character limit is from the docs, not tried.",
     ),
     Assumption(
         "PX-QUEUE",
@@ -99,7 +131,23 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "scripts carry event=FEScroll.",
         DOCS,
         "medium",
-        note="Documented; not exercised by the hook scripts except l=99999 on game start.",
+        status="hardware-verified",
+        note=SEEN + "a marquee queued with l=5&event=FEScroll played for about 5 s, then text queued with l=1 "
+        "scrolled once; blank_display (no l) interrupted.",
+    ),
+    Assumption(
+        "PX-HOLD",
+        "l=-1, documented as 'infinite until next command', shows text once and then the marquee goes blank; "
+        "l=99999 holds it until interrupted, and a plain call followed by the same call with l=99999 shows it "
+        "at once (the plain call interrupts and clears the queue) and holds it.",
+        f"{DOCS} (Looping & Queue System); hardware",
+        "medium",
+        status="hardware-verified",
+        note=SEEN + "text?t=HELLO&l=-1 showed once, then blank; HOLD ONE with l=99999 replaced Galaga and stayed; "
+        "the plain-then-l=99999 pair showed at once and stayed, and a long message sent the same way kept "
+        "scrolling for 30 s; scroll=false text stayed. Short text doesn't scroll (it fits). Held text stayed "
+        "until scrolling in the frontend replaced it. Not yet seen: the pair while the frontend's own l=99999 "
+        "game marquee holds the queue.",
     ),
     Assumption(
         "PX-FRONTEND",
@@ -109,7 +157,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "launch, so whatever this server shows lasts until the next frontend event.",
         f"{SCRIPTS} system-selected, game-selected, game-start",
         "high",
-        note="Read in the scripts the installer puts on Batocera (pixelcade-linux, last changed 2026-06).",
+        status="hardware-verified",
+        note=SEEN + "scrolling in the frontend replaced held text; launching a game (through mcp-server-batocera) "
+        "ended a locked clock and showed the game's marquee. Hook scripts from pixelcade-linux (2026-06).",
     ),
     Assumption(
         "PX-WIDGETS",
@@ -117,7 +167,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "/attract show widgets; ?nointerrupt locks one in place (PX-ATTRACT-LOCK); /attract/stop ends them.",
         DOCS,
         "medium",
-        note="Documented; the themed clock types depend on the pixelweb version.",
+        status="hardware-verified",
+        note=SEEN + "Galaga and Pac-Man clocks (12h=false too), weather (saved location and a ZIP), a stock ticker "
+        "and NFL scores all rendered, with no settings beyond the install. ?nointerrupt and /attract: step 5.",
     ),
     Assumption(
         "PX-ATTRACT-LOCK",
@@ -128,9 +180,11 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         f"{DOCS} (attract mode: 'prevents interruption by other API calls'); {SCRIPTS} screensaver-start, "
         "screensaver-stop",
         "medium",
-        note="The hook calls are read in the scripts. Unknown: whether ignored calls still answer 200 (the "
-        "simulator assumes so), whether queued (l=N) calls wait for the lock, and whether Pulse calls are locked "
-        "too (the simulator doesn't lock them).",
+        status="hardware-verified",
+        note=SEEN + "a clock shown with lock=true stayed through frontend scrolling, and show_text over it "
+        "answered 200 but didn't show. During the random-video screensaver the marquee stayed in attract mode, "
+        "didn't follow the videos and ignored show_text; after stop_widgets it followed the videos. Unknown: "
+        "whether queued (l=N) calls wait for the lock, and whether Pulse calls are locked too.",
     ),
     Assumption(
         "PX-DEFAULT-MARQUEE",
@@ -138,8 +192,10 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "(console/default-marquee.png) on the LED and LCD when called with no parameters; older versions answer 404.",
         f"{RELEASES} (8.0.14); {DOCS} (default marquee path)",
         "low",
-        note="Only in the release notes, not the API reference: parameters, reply and how it interacts with "
-        "the queue and attract lock are unknown.",
+        status="hardware-verified",
+        note=SEEN + 'GET /defaultmarquee answered 200 {"status": "ok"} and showed the Batocera marquee (this '
+        "install's default). Only in the release notes, not the API reference; how it interacts with the queue "
+        "and the attract lock isn't known.",
     ),
     Assumption(
         "PX-ZONES",
@@ -156,7 +212,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "from the board.",
         f"{DOCS} (Pulse API)",
         "medium",
-        note="Documented; needs strips connected to check.",
+        note="Documented; needs strips connected to check. Seen 2026-10-22 with strips configured in pixelweb "
+        "(ledStrip true, 50 LEDs) but none connected: /ledstrip/getbrightness never answered (30 s), so get_status "
+        "and doctor wait only PULSE_STATUS_TIMEOUT_S (2 s) and report pulse.responding false.",
     ),
     Assumption(
         "PX-POWER",
