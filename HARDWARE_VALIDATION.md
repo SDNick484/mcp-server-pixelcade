@@ -1,6 +1,7 @@
 # Hardware validation (Pixelcade LED, V2 board)
 
-Step 1 has run on a real Pixelcade (V2 board, pixelweb 8.0.17, 2026-10-22); the rest hasn't yet. The server was built from Pixelcade's API
+Steps 1 to 3 have run on a real Pixelcade (V2 board, pixelweb 8.0.17, 2026-10-22); the rest hasn't yet.
+The server was built from Pixelcade's API
 reference and its Batocera hook scripts, and tested against a wire-level fake pixelweb
 (`src/pixelcade_mcp/sim/fake_pixelweb.py`, real HTTP). Each step depends only on the ones before it and
 names the assumptions it confirms (ids, claims and sources are in `src/pixelcade_mcp/assumptions.py`).
@@ -13,12 +14,12 @@ at steps 1, 5 and 6 by number, so keep the numbering if you edit this file.
 | Feature | Status | Step |
 | --- | --- | --- |
 | `doctor` (TCP, /info, frontend game, Pulse) | verified on hardware (Pulse with strips not yet) | 1 |
-| Game, system and animation marquees; `show_current_game` | verified against simulator only | 2 |
-| `show_text` options and queueing | verified against simulator only | 3 |
+| Game, system and animation marquees; `show_current_game` | verified on hardware | 2 |
+| `show_text` options and queueing | verified on hardware | 3 |
 | Widgets (themed clocks, weather, stocks, sports, attract) | verified against simulator only | 4 |
 | Interplay with the frontend's own marquee changes | verified against simulator only | 5 |
 | The screensaver's attract lock; `stop_widgets` releasing it | verified against simulator only | 5 |
-| `show_default_marquee` (pixelweb 8.0.14+) | verified against simulator only | 2 |
+| `show_default_marquee` (pixelweb 8.0.14+) | verified on hardware | 2 |
 | Pulse effects, fills, clearing, brightness cap | verified against simulator only | 6 |
 | Dry run and ActionResult | verified against simulator only | 7 |
 | Log redaction (shared logsafe.py) | verified on hardware | 1 |

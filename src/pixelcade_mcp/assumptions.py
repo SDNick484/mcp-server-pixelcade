@@ -50,7 +50,10 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "(?nogif, ?nointerrupt), and spaces in ROM names are sent as %20.",
         f"{DOCS}; {SCRIPTS} (rawurlencode, curl)",
         "high",
-        note="Exactly how the hook scripts call it; our encoding of other characters (%28, %2C) isn't seen yet.",
+        status="hardware-verified",
+        note=SEEN + "the marquee for 'Super Mario World 2 - Yoshi's Island (USA)' showed, sent as ...%20Yoshi%27s"
+        "%20Island%20%28USA%29; flags like ?nogif and scroll=false work. pixelweb matches artwork by exact name: "
+        "the ROM's '(USA) (Rev 1)' found nothing, so the default marquee showed.",
     ),
     Assumption(
         "PX-INFO",
@@ -74,7 +77,8 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         note=SEEN + "'neogeo%eightman' ('%', not a comma). It followed every marquee: scrolling gave "
         "genesis%Old-Towers; show_text and play_animation left it; show_console_marquee snes made it 'snes%'; "
         "show_game_marquee galaga made it mame%galaga. The claim used to say it was the frontend's selection; "
-        "it isn't, so the server remembers the frontend's itself (server._Marquees). During the random-video "
+        "it isn't, so the server remembers the frontend's itself (server._Marquees); in one session, Galaga "
+        "then show_current_game restored the frontend's gba/SpaceTwins. During the random-video "
         "screensaver it changed with each video (mystwaru, eightman, circusc), so "
         "the screensaver's game-selected events update it even while attract mode holds the marquee: after the "
         "screensaver, it names the last video's game, not the user's selection.",
@@ -117,7 +121,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "scroll=, lines=, blink= and left=.",
         DOCS,
         "medium",
-        note="Documented; blink's 9-character limit is from the docs too.",
+        status="hardware-verified",
+        note=SEEN + "color, two fixed lines from a literal \\n (sent %5Cn), blink on 'PLAYER 1', and four "
+        "left-justified lines all showed as documented. blink's 9-character limit is from the docs, not tried.",
     ),
     Assumption(
         "PX-QUEUE",
@@ -125,7 +131,9 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "scripts carry event=FEScroll.",
         DOCS,
         "medium",
-        note="Documented; not exercised by the hook scripts except l=99999 on game start.",
+        status="hardware-verified",
+        note=SEEN + "a marquee queued with l=5&event=FEScroll played for about 5 s, then text queued with l=1 "
+        "scrolled once; blank_display (no l) interrupted.",
     ),
     Assumption(
         "PX-FRONTEND",
@@ -164,8 +172,10 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
         "(console/default-marquee.png) on the LED and LCD when called with no parameters; older versions answer 404.",
         f"{RELEASES} (8.0.14); {DOCS} (default marquee path)",
         "low",
-        note="Only in the release notes, not the API reference: parameters, reply and how it interacts with "
-        "the queue and attract lock are unknown.",
+        status="hardware-verified",
+        note=SEEN + 'GET /defaultmarquee answered 200 {"status": "ok"} and showed the Batocera marquee (this '
+        "install's default). Only in the release notes, not the API reference; how it interacts with the queue "
+        "and the attract lock isn't known.",
     ),
     Assumption(
         "PX-ZONES",

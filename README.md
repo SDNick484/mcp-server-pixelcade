@@ -187,18 +187,18 @@ guess. Hardware results so far are from pixelweb 8.0.17 on a V2 board (2026-10-2
 
 | Assumption | Confidence | Status |
 |---|---|---|
-| `PX-GET-API` | high | simulator-only |
+| `PX-GET-API` | high | hardware-verified |
 | `PX-INFO` | medium | hardware-verified |
 | `PX-CURRENTGAME` | medium | hardware-verified |
 | `PX-LISTS` | low | hardware-contradicted |
 | `PX-IMAGES-LIST` | high | hardware-verified |
 | `PX-REPLIES` | low | hardware-verified |
-| `PX-TEXT` | medium | simulator-only |
-| `PX-QUEUE` | medium | simulator-only |
+| `PX-TEXT` | medium | hardware-verified |
+| `PX-QUEUE` | medium | hardware-verified |
 | `PX-FRONTEND` | high | simulator-only |
 | `PX-WIDGETS` | medium | simulator-only |
 | `PX-ATTRACT-LOCK` | medium | simulator-only |
-| `PX-DEFAULT-MARQUEE` | low | simulator-only |
+| `PX-DEFAULT-MARQUEE` | low | hardware-verified |
 | `PX-ZONES` | medium | simulator-only |
 | `PX-BRIGHTNESS` | medium | simulator-only |
 | `PX-POWER` | high | simulator-only |
