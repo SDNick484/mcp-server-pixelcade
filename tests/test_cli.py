@@ -8,9 +8,10 @@ import json
 import pytest
 
 from pixelcade_mcp import cli
-from pixelcade_mcp.assumptions import unverified
+from pixelcade_mcp import client as client_mod
+from pixelcade_mcp.assumptions import contradicted, unverified
 from pixelcade_mcp.config import Settings
-from pixelcade_mcp.doctor import STEP, run_doctor
+from pixelcade_mcp.doctor import STEP, Report, render, run_doctor
 
 
 def run(argv: list[str], capsys) -> tuple[int, str, str]:
@@ -31,8 +32,52 @@ def test_doctor_ok(env, capsys):
     assert code == 0 and out.rstrip().endswith("OK")
     assert "LED 128x32, V2 board True" in out and "last marquee shown: mame/digdug" in out
     assert "90 LEDs, brightness 64" in out
-    pending = unverified()  # any still-unverified id, so recording results doesn't break this test
-    assert not pending or ("Not yet confirmed on hardware" in out and pending[0].id in out)
+    # By default only a count; computed from the registry, so recording results doesn't break this test.
+    pending = unverified()
+    if pending:
+        assert f"Not yet confirmed on hardware: {len(pending)} (doctor --verbose lists them)" in out
+        assert f"   {pending[0].id}:" not in out
+    else:
+        assert "Not yet confirmed on hardware: 0\n" in out
+
+
+def test_doctor_verbose_lists_each_unverified_assumption(env, capsys):
+    code, out, _ = run(["doctor", "--verbose"], capsys)
+    assert code == 0 and "--verbose lists them" not in out
+    pending = unverified()
+    assert not pending or (f"Not yet confirmed on hardware ({len(pending)}):" in out and f"   {pending[-1].id}:" in out)
+
+
+def test_doctor_lists_contradicted_assumptions_apart_from_unverified_ones(env, capsys):
+    # A contradicted assumption is known, not pending: it's listed in full and never counted as unconfirmed.
+    assert {a.id for a in contradicted()}.isdisjoint(a.id for a in unverified())
+    code, out, _ = run(["doctor"], capsys)
+    for a in contradicted():
+        assert f"   {a.id}: {a.claim}" in out
+    assert not contradicted() or f"Contradicted on hardware, no longer relied on ({len(contradicted())}):" in out
+
+
+def test_render_shows_contradicted_in_full_and_unverified_as_a_count():
+    # Hand-built, so this covers both sections whatever the registry holds at the time.
+    report = Report(
+        {},
+        "http://arcade:8080",
+        False,
+        unverified_assumptions=["FAKE-1: a", "FAKE-2: b"],
+        contradicted_assumptions=["FAKE-3: c"],
+    )
+    brief = render(report)
+    assert "Contradicted on hardware, no longer relied on (1):\n   FAKE-3: c\n" in brief
+    assert "Not yet confirmed on hardware: 2 (doctor --verbose lists them)" in brief and "FAKE-1" not in brief
+    assert "Not yet confirmed on hardware (2):\n   FAKE-1: a\n   FAKE-2: b\n" in render(report, verbose=True)
+    assert "Contradicted" not in render(Report({}, "http://arcade:8080", False))
+
+
+def test_doctor_json_keeps_every_assumption(env, capsys):
+    code, out, _ = run(["doctor", "--json"], capsys)
+    body = json.loads(out)
+    assert [s.split(":")[0] for s in body["unverified_assumptions"]] == [a.id for a in unverified()]
+    assert [s.split(":")[0] for s in body["contradicted_assumptions"]] == [a.id for a in contradicted()]
 
 
 def test_doctor_notes_a_pixelweb_too_old_for_the_default_marquee(env, capsys):
@@ -49,7 +94,12 @@ def test_doctor_when_configured_strips_dont_answer(env, capsys):
     # ASSUMPTION PX-BRIGHTNESS: strips configured in pixelweb, none connected.
     env.hang.add("/ledstrip/getbrightness")
     code, out, _ = run(["doctor"], capsys)
-    assert code == 1 and "x  pulse     Pulse strips configured (90 LEDs), but: pixelweb didn't answer" in out
+    wait = client_mod.PULSE_STATUS_TIMEOUT_S  # 2 s for real; conftest shortens it
+    assert (
+        code == 1
+        and f"x  pulse     Pulse strips configured (90 LEDs), but the board didn't answer within {wait:g} s\n" in out
+    )
+    assert out.count("strips configured") == 1  # said once, not again in the client's own timeout message
     assert "If no strips are connected and powered yet, that's expected" in out
 
 
