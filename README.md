@@ -17,7 +17,8 @@ The Pixelcade installer runs **pixelweb**, a small HTTP listener, on the arcade 
 `/userdata/system/pixelcade/pixelweb`, port 8080, started from `/userdata/system/custom.sh`). Pixelweb
 drives the marquee over USB and exposes a [REST API](https://pixelcade.org/developers). This server is a
 typed, allow-listed client for that API, so it can run anywhere that can reach the arcade on TCP 8080:
-your desktop, a laptop, or a homelab VM.
+your desktop, a laptop, or a homelab VM. Clients reach it over stdio, or over Streamable HTTP as a
+service behind Cloudflare Access ([Service and Cloudflare](#service-and-cloudflare)).
 
 ```
 MCP client ──stdio──▶ mcp-server-pixelcade ──HTTP :8080──▶ pixelweb (Batocera) ──USB──▶ V2 board ─▶ LED panels
@@ -57,12 +58,11 @@ mcp-server-pixelcade call --dry-run blank_display                  # reports the
 
 ### On Alpine (e.g. a Proxmox LXC)
 
-`deploy/alpine/` installs it to run from the command line on an always-on Alpine machine on the same
-LAN as the arcade: a venv in `/opt/mcp-server-pixelcade`, a `mcp-pixelcade` system user, every setting
-in `/etc/mcp-server-pixelcade/env`, and `mcp-server-pixelcade` on `PATH`, which runs as that user with
-those settings. Nothing listens on a port, so there's no service to secure; you run `doctor` and `call`
-over SSH. The layout matches the sibling servers' `deploy/alpine/`, so an OpenRC service can be added
-later without moving anything.
+`deploy/alpine/` installs it on an always-on Alpine machine on the same LAN as the arcade, in the
+sibling servers' `deploy/alpine/` layout so they can share an LXC: a venv in `/opt/mcp-server-pixelcade`,
+a `mcp-pixelcade` system user, every setting in `/etc/mcp-server-pixelcade/env`, an OpenRC service
+(`/etc/init.d/mcp-server-pixelcade`), and `mcp-server-pixelcade` on `PATH`, which runs as that user with
+those settings, for `doctor` and `call` from a shell.
 
 ```sh
 git clone https://github.com/SDNick484/mcp-server-pixelcade.git && cd mcp-server-pixelcade
@@ -70,13 +70,51 @@ sh deploy/alpine/install.sh                                # as root; re-run to 
 vim /etc/mcp-server-pixelcade/env                          # PIXELCADE_URL=<the arcade's IP>
 mcp-server-pixelcade doctor
 mcp-server-pixelcade call show_text text="GAME NIGHT" color=cyan
+rc-update add mcp-server-pixelcade default && rc-service mcp-server-pixelcade start
 ```
 
 A variable set in your shell beats the env file, so one-off overrides work as usual
 (`PIXELCADE_DRY_RUN=1 mcp-server-pixelcade call ...`). mcp-server-batocera's
-`deploy/alpine/setup-arcade.sh` installs both arcade servers in a Proxmox container in one go. CI runs
-`deploy/alpine/smoke-test.sh` in a stock `python:3.12-alpine` container: install, upgrade, the test
-suite on musl, and `doctor` and `call` through the command on `PATH` against the simulator.
+`deploy/alpine/setup-arcade.sh` installs both arcade servers in a Proxmox container in one go, and
+enables and restarts both services. CI runs `deploy/alpine/smoke-test.sh` in a stock
+`python:3.12-alpine` container: install, upgrade, the test suite on musl, `doctor` and `call` through the
+command on `PATH` against the simulator, and the OpenRC service (as its user, an MCP call over HTTP,
+Access settings from the env file).
+
+### Service and Cloudflare
+
+The service runs `/opt/mcp-server-pixelcade/run.sh serve --http` under `supervise-daemon` (restarted if
+it exits) as `mcp-pixelcade`, logging to `/var/log/mcp-server-pixelcade/server.log`. The HTTP transport
+is `remote.py`, shared byte for byte with the sibling servers through
+[mcp-server-shared](https://github.com/SDNick484/mcp-server-shared). Its settings are the `MCP_HTTP_*`,
+`MCP_PUBLIC_HOSTS` and `CF_ACCESS_*` lines in `/etc/mcp-server-pixelcade/env`:
+
+| Flag | Variable | Default |
+| --- | --- | --- |
+| `--bind` | `MCP_HTTP_BIND` | `127.0.0.1` |
+| `--port` | `MCP_HTTP_PORT` | `8718` (the siblings use 8711 to 8716, Batocera 8717) |
+| `--path` | `MCP_HTTP_PATH` | `/pixelcade/mcp` |
+| `--public-host` | `MCP_PUBLIC_HOSTS` | none: only loopback Host headers pass |
+| | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | none: serves only this machine |
+| | `MCP_ALLOWED_EMAILS` | anyone Access lets in |
+
+With Access configured, every request needs a valid Access assertion, checked here: signature (Access's
+published keys), the application's audience tag, issuer, expiry, and the email allow-list if set; anything
+else gets a plain 403. Without Access it serves only the machine it runs on: it won't listen on anything
+but loopback, won't start with a `--public-host`, and answers 403 to anything a tunnel or proxy forwarded
+(`--insecure-no-auth` turns that off for a short trusted-LAN test; don't run the service with it).
+
+To use it as a connector, with cloudflared running on the same machine (keep the `127.0.0.1` bind):
+
+1. **Tunnel route:** a public hostname, say `mcp.example.com`, path `pixelcade/*`, to
+   `http://localhost:8718`. Several servers can share the hostname, one path each.
+2. **Access application** (self-hosted) covering that hostname and path, with a policy for who may use it
+   and Managed OAuth turned on, so Claude's connector can sign in through Access. Note its AUD tag.
+3. **The env file:** `MCP_PUBLIC_HOSTS=mcp.example.com`, `CF_ACCESS_TEAM_DOMAIN=<team>.cloudflareaccess.com`,
+   `CF_ACCESS_AUD=<the AUD tag>`, then `rc-service mcp-server-pixelcade restart`.
+4. **The connector:** `https://mcp.example.com/pixelcade/mcp`.
+
+`GET /healthz` answers without auth, for monitoring. Details are in `src/pixelcade_mcp/remote.py`.
 
 ## Use it with an MCP client
 
@@ -92,6 +130,9 @@ suite on musl, and `doctor` and `call` through the command on `PATH` against the
 ```
 
 For Claude Code: `claude mcp add pixelcade -e PIXELCADE_URL=192.168.1.50 -- /path/to/.venv/bin/mcp-server-pixelcade`.
+
+Running as a service behind Cloudflare Access instead, add `https://<your host>/pixelcade/mcp` as a
+connector ([Service and Cloudflare](#service-and-cloudflare)).
 
 ## Configuration
 
@@ -172,8 +213,9 @@ Every tool that changes the display returns the same structured result as the si
   warns that powering more than about 40 LEDs from the V2 board without an external 5V supply (with a
   common ground) can overload it. Raise `PIXELCADE_PULSE_MAX_BRIGHTNESS` once your strips have their own
   supply. The firmware's own thermal throttling (55/60/65 °C) is a backstop, not a plan.
-- **No credentials to protect, and no new exposure.** Pixelweb has no authentication; anything on your
-  LAN can already call every endpoint. Keep port 8080 off the internet.
+- **Pixelweb has no authentication**, so anything on your LAN can already call every endpoint. Keep port
+  8080 off the internet. Over HTTP, this server is the gate: Access assertions are checked on every
+  request, and without Access it serves only its own machine ([Service and Cloudflare](#service-and-cloudflare)).
 - Tools carry titles and MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`,
   `openWorldHint`). Nothing is marked destructive: every display change is undone by the next one.
 - Errors are actionable ("pixelweb isn't answering at …", "Can't resolve batocera.local; set
@@ -217,7 +259,7 @@ guess. Hardware results so far are from pixelweb 8.0.17 on a V2 board (2026-10-2
 
 ```sh
 pip install -e ".[dev]"
-pytest              # validators, HTTP client, tools via an in-process MCP client, dry run, faults, CLI, stdio
+pytest              # validators, HTTP client, tools via an in-process MCP client, dry run, faults, CLI, stdio, HTTP + Access
 ruff check . && ruff format --check .
 mypy                # strict
 ```

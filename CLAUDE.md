@@ -23,15 +23,20 @@ reasoning behind non-obvious changes instead of only making them.
   `routes`/`slow_s`/`drop` faults); used by the tests and `simulate`
 - `src/pixelcade_mcp/logsafe.py`, `tasks.py`, `ratelimit.py` (and their tests): shared with the sibling
   servers, synced from `mcp-server-shared` by `scripts/sync_shared.py` at the commit in `shared.lock`.
-  `tasks.py` and `ratelimit.py` aren't used here yet. `remote.py` is excluded: this server is LAN-only.
+  `tasks.py` and `ratelimit.py` aren't used here yet. `remote.py` (and `test_remote.py`): the Streamable
+  HTTP transport behind Cloudflare Access, for `serve --http`.
 - `src/pixelcade_mcp/effects.py`: Pulse effect catalog (reference data, not an allow-list)
-- `src/pixelcade_mcp/cli.py`: `serve` (default), `doctor` (`check`), `simulate`, `call`
-- `deploy/alpine/`: command-line install on Alpine (venv, `mcp-pixelcade` user, `/etc/.../env`, a `PATH`
-  command that drops to the user; caller's environment beats the file). No service yet; `smoke-test.sh` runs
-  in CI. Keep it in step with mcp-server-batocera's.
+- `src/pixelcade_mcp/cli.py`: `serve` (default; stdio, or `--http` on 127.0.0.1:8718/pixelcade/mcp through
+  `remote.py`), `doctor` (`check`), `simulate`, `call`
+- `deploy/alpine/`: install on Alpine (venv, `mcp-pixelcade` user, `/etc/.../env`, an OpenRC service
+  running `run.sh serve --http`, a `PATH` command that drops to the user; caller's environment beats the
+  file); `smoke-test.sh` runs in CI. Keep it in step with mcp-server-batocera's, whose `setup-arcade.sh`
+  installs both and enables both services. Access settings go in the env file, never
+  `--insecure-no-auth` in the service.
 - `tests/`: `conftest.py` (a `FakePixelweb` per test; `MockPixelweb` on `httpx.MockTransport` only for
   failures a socket can't produce, like DNS errors), `test_config`, `test_client`, `test_tools` (in-process
-  MCP `Client`, dry run, faults), `test_cli`, `test_assumptions`, `test_logsafe`, `test_stdio`.
+  MCP `Client`, dry run, faults), `test_cli`, `test_assumptions`, `test_logsafe`, `test_stdio`, `test_remote`
+  (shared: the transport), `test_http_tools` (these tools over HTTP with signed Access assertions).
   Async tests use anyio's plugin, not pytest-asyncio.
 
 ## Rules for changes
@@ -89,7 +94,7 @@ Unknowns to confirm on the real board: whether `/news` exists.
 
 ```sh
 pip install -e ".[dev]" && pytest && ruff check . && ruff format --check . && mypy
-mcp-server-pixelcade doctor [--json | --verbose] | simulate [--write-config DIR] | call <tool> k=v [--dry-run] | (serve [--dry-run])
+mcp-server-pixelcade doctor [--json | --verbose] | simulate [--write-config DIR] | call <tool> k=v [--dry-run] | (serve [--dry-run] [--http])
 ```
 
 Real hardware: `doctor`, then HARDWARE_VALIDATION.md. Record results in `assumptions.py` and the README table.
