@@ -41,7 +41,9 @@ PIXELCADE_URL=192.168.1.20 mcp-server-pixelcade doctor
 
 `doctor` checks each layer (TCP, `/info`, the frontend's current game, Pulse) and, when one fails, says
 what to try and which [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) step covers it. It changes nothing
-on the marquee.
+on the marquee. It ends with the [assumptions](#verification-status) that hardware contradicted (listed; the code
+no longer relies on them) and a count of those not yet confirmed; `doctor --verbose` lists those too, and
+`doctor --json` always includes both lists.
 
 ### Trying it without the arcade
 

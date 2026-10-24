@@ -89,7 +89,7 @@ Unknowns to confirm on the real board: whether `/news` exists.
 
 ```sh
 pip install -e ".[dev]" && pytest && ruff check . && ruff format --check . && mypy
-mcp-server-pixelcade doctor [--json] | simulate [--write-config DIR] | call <tool> k=v [--dry-run] | (serve [--dry-run])
+mcp-server-pixelcade doctor [--json | --verbose] | simulate [--write-config DIR] | call <tool> k=v [--dry-run] | (serve [--dry-run])
 ```
 
 Real hardware: `doctor`, then HARDWARE_VALIDATION.md. Record results in `assumptions.py` and the README table.

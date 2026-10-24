@@ -21,8 +21,10 @@ from dataclasses import asdict, dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlparse
 
+import httpx
+
 from . import client as client_mod
-from .assumptions import unverified
+from .assumptions import contradicted, unverified
 from .client import DEFAULT_MARQUEE_SINCE, PixelcadeClient, PixelcadeError, parse_current_game, parse_version
 from .config import Settings
 from .logsafe import redact
@@ -44,7 +46,8 @@ class Report:
     url: str
     dry_run: bool
     checks: list[Check] = field(default_factory=list)
-    unverified_assumptions: list[str] = field(default_factory=list)
+    unverified_assumptions: list[str] = field(default_factory=list)  # status simulator-only
+    contradicted_assumptions: list[str] = field(default_factory=list)  # status hardware-contradicted
 
     @property
     def ok(self) -> bool:
@@ -71,6 +74,7 @@ async def run_doctor(settings: Settings, timeout: float = 5.0) -> Report:
         url=settings.url,
         dry_run=settings.dry_run,
         unverified_assumptions=[f"{a.id}: {a.claim}" for a in unverified()],
+        contradicted_assumptions=[f"{a.id}: {a.claim}" for a in contradicted()],
     )
     add = report.checks.append
     note = " (dry run)" if settings.dry_run else ""
@@ -129,7 +133,13 @@ async def run_doctor(settings: Settings, timeout: float = 5.0) -> Report:
                 ).get("brightness")
             except PixelcadeError as exc:
                 pixels = info.get("ledStripNumPixels", "?")
-                add(Check("pulse", False, f"Pulse strips configured ({pixels} LEDs), but: {exc}", _hint(
+                # The client's timeout message is written for get_status and already says strips are
+                # configured; doctor says that itself, so it uses the underlying cause rather than the text.
+                if isinstance(exc.__cause__, httpx.TimeoutException):
+                    why = f" the board didn't answer within {client_mod.PULSE_STATUS_TIMEOUT_S:g} s"
+                else:
+                    why = f": {exc}"
+                add(Check("pulse", False, f"Pulse strips configured ({pixels} LEDs), but{why}", _hint(
                     "pulse",
                     "If no strips are connected and powered yet, that's expected; Pulse tools won't work until "
                     "they are. Or turn LED strip support off in Pixelcade's settings",
@@ -146,7 +156,24 @@ async def run_doctor(settings: Settings, timeout: float = 5.0) -> Report:
     return report
 
 
-def render(report: Report, redacted: bool = True) -> str:
+def _assumption_lines(report: Report, verbose: bool) -> list[str]:
+    """Contradicted ones in full (rare, and each one changed the code); unverified ones as a count unless
+    verbose, since that list only shrinks as hardware checks are recorded and says little run to run."""
+    lines = [""]
+    if report.contradicted_assumptions:
+        lines.append(f"Contradicted on hardware, no longer relied on ({len(report.contradicted_assumptions)}):")
+        lines += [f"   {c}" for c in report.contradicted_assumptions]
+    pending = report.unverified_assumptions
+    if verbose and pending:
+        lines.append(f"Not yet confirmed on hardware ({len(pending)}):")
+        lines += [f"   {u}" for u in pending]
+    else:
+        more = " (doctor --verbose lists them)" if pending else ""
+        lines.append(f"Not yet confirmed on hardware: {len(pending)}{more}")
+    return lines
+
+
+def render(report: Report, redacted: bool = True, verbose: bool = False) -> str:
     lines = ["mcp-server-pixelcade doctor", ""]
     lines += [f"  {k}: {v}" for k, v in report.versions.items()]
     if report.dry_run:
@@ -156,8 +183,7 @@ def render(report: Report, redacted: bool = True) -> str:
         lines.append(f"   {'ok' if c.ok else 'x '} {c.layer:<9} {c.detail}")
         if c.hint:
             lines.append(f"      -> {c.hint}")
-    lines += ["", f"Not yet confirmed on hardware ({len(report.unverified_assumptions)}):"]
-    lines += [f"   {u}" for u in report.unverified_assumptions]
+    lines += _assumption_lines(report, verbose)
     lines += ["", "OK" if report.ok else "PROBLEMS FOUND"]
     text = "\n".join(lines)
     return redact(text) if redacted else text
