@@ -1,0 +1,33 @@
+#!/sbin/openrc-run
+# OpenRC service for mcp-server-pixelcade (Streamable HTTP), e.g. in an Alpine LXC.
+# Installed as /etc/init.d/mcp-server-pixelcade by install.sh. Every setting
+# (PIXELCADE_*, HTTP and Cloudflare Access) lives in /etc/mcp-server-pixelcade/env.
+
+name="mcp-server-pixelcade"
+description="MCP server for a Pixelcade LED marquee, over Streamable HTTP"
+
+# supervise-daemon restarts the server if it exits (respawn_* below).
+supervisor="supervise-daemon"
+# run.sh loads /etc/mcp-server-pixelcade/env, then execs the CLI with these arguments.
+# --http is an argument here, not run.sh's default, so `mcp-server-pixelcade` with no
+# arguments (over SSH, say) still speaks stdio. Dry run and log redaction are env-file
+# settings (PIXELCADE_DRY_RUN, PIXELCADE_LOG_UNREDACTED), so there's nothing else to pass.
+command="/opt/mcp-server-pixelcade/run.sh"
+command_args="serve --http"
+command_user="mcp-pixelcade:mcp-pixelcade"
+directory="/var/lib/mcp-server-pixelcade"
+output_log="/var/log/mcp-server-pixelcade/server.log"
+error_log="/var/log/mcp-server-pixelcade/server.log"
+respawn_delay=5
+respawn_max=10
+respawn_period=300
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	checkpath --directory --mode 0750 --owner mcp-pixelcade:mcp-pixelcade /var/log/mcp-server-pixelcade
+	checkpath --directory --mode 0700 --owner mcp-pixelcade:mcp-pixelcade /var/lib/mcp-server-pixelcade
+}
