@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 
+import httpx
 import pytest
 
-from pixelcade_mcp import cli
+from pixelcade_mcp import cli, remote, server
 from pixelcade_mcp import client as client_mod
 from pixelcade_mcp.assumptions import contradicted, unverified
 from pixelcade_mcp.config import Settings
@@ -165,3 +166,24 @@ async def test_simulate_writes_a_config_and_echoes_requests(tmp_path, capsys):
         await task
     out = capsys.readouterr().out
     assert "export PIXELCADE_CONFIG_DIR=" in out and "pixelweb <- GET /text?t=HI" in out
+
+
+# --- /healthz: cli.check_health behind remote.build_app -----------------------------------------
+async def healthz(url_env: str) -> httpx.Response:
+    """GET /healthz through the same ASGI app `serve --http` builds, with no socket and no MCP lifespan."""
+    app = remote.build_app(server.mcp, remote.HttpConfig(), health_check=cli.check_health)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as http:
+        return await http.get(url_env)
+
+
+@pytest.mark.anyio
+async def test_healthz_is_200_while_pixelweb_answers(env):
+    resp = await healthz("/healthz")
+    assert resp.status_code == 200 and resp.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_healthz_is_503_when_pixelweb_is_unreachable(monkeypatch):
+    monkeypatch.setenv("PIXELCADE_URL", "http://127.0.0.1:9")
+    resp = await healthz("/healthz")
+    assert resp.status_code == 503 and resp.json()["status"] == "degraded"
