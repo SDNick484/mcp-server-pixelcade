@@ -21,26 +21,17 @@ Confidence is about the *claim*, judged from its source:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
+from .registry import Assumption, Confidence, Status, by_id
+from .registry import contradicted as _contradicted
+from .registry import unverified as _unverified
 
-Confidence = Literal["high", "medium", "low"]
-Status = Literal["simulator-only", "hardware-verified", "hardware-contradicted"]
+# Confidence and Status are re-exported (no_implicit_reexport): callers may need the literal types.
+__all__ = ["ASSUMPTIONS", "BY_ID", "Assumption", "Confidence", "Status", "contradicted", "unverified"]
 
 DOCS = "pixelcade.org/developers"
 SCRIPTS = "pixelcade-linux batocera/scripts"
 RELEASES = "pixelcade.org/release-notes"
 SEEN = "Seen 2026-10-22 on a V2 LED (firmware PIXR0023), pixelweb 8.0.17 on Batocera 43, from a Proxmox LXC: "
-
-
-@dataclass(frozen=True)
-class Assumption:
-    id: str
-    claim: str
-    source: str
-    confidence: Confidence
-    status: Status = "simulator-only"
-    note: str = ""
 
 
 ASSUMPTIONS: tuple[Assumption, ...] = (
@@ -226,14 +217,14 @@ ASSUMPTIONS: tuple[Assumption, ...] = (
     ),
 )
 
-BY_ID = {a.id: a for a in ASSUMPTIONS}
+BY_ID = by_id(ASSUMPTIONS)
 
 
 def unverified() -> list[Assumption]:
     """Not checked on hardware yet: the code relies on them on the strength of docs or source alone."""
-    return [a for a in ASSUMPTIONS if a.status == "simulator-only"]
+    return _unverified(ASSUMPTIONS)
 
 
 def contradicted() -> list[Assumption]:
     """Checked on hardware and found wrong: the code no longer relies on them (see each ``note``)."""
-    return [a for a in ASSUMPTIONS if a.status == "hardware-contradicted"]
+    return _contradicted(ASSUMPTIONS)
