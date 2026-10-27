@@ -28,6 +28,7 @@ from .assumptions import contradicted, unverified
 from .client import DEFAULT_MARQUEE_SINCE, PixelcadeClient, PixelcadeError, parse_current_game, parse_version
 from .config import Settings
 from .logsafe import redact
+from .registry import doctor_lines
 
 STEP = {"config": 1, "tcp": 1, "info": 1, "frontend": 5, "pulse": 6}
 
@@ -156,23 +157,6 @@ async def run_doctor(settings: Settings, timeout: float = 5.0) -> Report:
     return report
 
 
-def _assumption_lines(report: Report, verbose: bool) -> list[str]:
-    """Contradicted ones in full (rare, and each one changed the code); unverified ones as a count unless
-    verbose, since that list only shrinks as hardware checks are recorded and says little run to run."""
-    lines = [""]
-    if report.contradicted_assumptions:
-        lines.append(f"Contradicted on hardware, no longer relied on ({len(report.contradicted_assumptions)}):")
-        lines += [f"   {c}" for c in report.contradicted_assumptions]
-    pending = report.unverified_assumptions
-    if verbose and pending:
-        lines.append(f"Not yet confirmed on hardware ({len(pending)}):")
-        lines += [f"   {u}" for u in pending]
-    else:
-        more = " (doctor --verbose lists them)" if pending else ""
-        lines.append(f"Not yet confirmed on hardware: {len(pending)}{more}")
-    return lines
-
-
 def render(report: Report, redacted: bool = True, verbose: bool = False) -> str:
     lines = ["mcp-server-pixelcade doctor", ""]
     lines += [f"  {k}: {v}" for k, v in report.versions.items()]
@@ -183,7 +167,9 @@ def render(report: Report, redacted: bool = True, verbose: bool = False) -> str:
         lines.append(f"   {'ok' if c.ok else 'x '} {c.layer:<9} {c.detail}")
         if c.hint:
             lines.append(f"      -> {c.hint}")
-    lines += _assumption_lines(report, verbose)
+    # The blank line before the assumptions section is part of the report, not of doctor_lines.
+    lines += [""]
+    lines += doctor_lines(report.unverified_assumptions, report.contradicted_assumptions, verbose=verbose)
     lines += ["", "OK" if report.ok else "PROBLEMS FOUND"]
     text = "\n".join(lines)
     return redact(text) if redacted else text
