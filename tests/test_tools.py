@@ -12,7 +12,7 @@ import dataclasses
 import pytest
 from mcp import Client
 
-from pixelcade_mcp import server
+from pixelcade_mcp import limits, server
 
 pytestmark = pytest.mark.anyio
 
@@ -403,3 +403,99 @@ async def test_unknown_endpoint_suggests_updating(mcp_client, fake):
     fake.routes["/attract/stop"] = (404, "404 page not found")
     r = await call(mcp_client, "stop_widgets")
     assert r.is_error and "updating" in text(r)
+
+
+# --- Rate limits (limits.py, server._throttle) ---------------------------------------------------
+@pytest.fixture
+def sim_clock(mcp_client, monkeypatch):
+    """Move the three buckets onto a clock the test advances by hand, starting full.
+
+    Depends on mcp_client so the lifespan has already built the real buckets; these replace them for the test.
+    The returned list holds the current time in seconds.
+    """
+    now = [0.0]
+
+    def clock() -> float:
+        return now[0]
+
+    monkeypatch.setattr(server, "marquee_bucket", limits.bucket(limits.MARQUEE, clock=clock))
+    monkeypatch.setattr(server, "pulse_bucket", limits.bucket(limits.PULSE, clock=clock))
+    monkeypatch.setattr(server, "widget_bucket", limits.bucket(limits.WIDGET, clock=clock))
+    return now
+
+
+async def test_text_burst_is_capped_then_refused_before_any_request(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.MARQUEE[0])):
+        assert not (await call(mcp_client, "show_text", text="HI")).is_error
+    sent_so_far = list(fake.requests)
+    r = await call(mcp_client, "show_text", text="HI")
+    assert r.is_error and "Rate limit" in text(r) and "show text on the marquee" in text(r)
+    assert fake.requests == sent_so_far  # the refused call reached pixelweb not at all
+
+
+async def test_held_text_spends_one_token_not_two(mcp_client, sim_clock, fake):
+    # loops=-1 sends two GETs (PX-HOLD), but it is one action, so one token.
+    assert not (await call(mcp_client, "show_text", text="HOLD", loops=-1)).is_error
+    assert len(fake.requests) == 2
+    assert server.marquee_bucket.tokens == limits.MARQUEE[0] - 1
+
+
+async def test_pulse_burst_is_capped_and_does_not_touch_the_marquee_bucket(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.PULSE[0])):
+        assert not (await call(mcp_client, "pulse_effect", zone="left_strip", effect="fire")).is_error
+    sent_so_far = list(fake.requests)
+    r = await call(mcp_client, "pulse_effect", zone="left_strip", effect="fire")
+    assert r.is_error and "run a Pulse effect" in text(r)
+    assert fake.requests == sent_so_far
+    # The LED burst left the marquee bucket alone: text still goes through.
+    assert not (await call(mcp_client, "show_text", text="STILL FINE")).is_error
+
+
+async def test_refill_follows_the_clock_and_never_exceeds_the_burst(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.MARQUEE[0])):
+        await call(mcp_client, "show_text", text="HI")
+    r = await call(mcp_client, "show_text", text="HI")
+    # One token at 2 a second is 0.5 s away; the message rounds the wait up to a whole second.
+    assert r.is_error and "try again in 1s" in text(r)
+
+    sim_clock[0] += 0.5  # exactly one token refills
+    assert not (await call(mcp_client, "show_text", text="HI")).is_error
+    assert (await call(mcp_client, "show_text", text="HI")).is_error
+
+    sim_clock[0] += 3600  # an hour idle refills to the burst, and no further
+    for _ in range(int(limits.MARQUEE[0])):
+        assert not (await call(mcp_client, "show_text", text="HI")).is_error
+    assert (await call(mcp_client, "show_text", text="HI")).is_error
+
+
+async def test_widget_bucket_is_shared_by_show_and_stop(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.WIDGET[0])):
+        assert not (await call(mcp_client, "show_widget", widget="clock")).is_error
+    r = await call(mcp_client, "stop_widgets")
+    assert r.is_error and "stop widgets" in text(r)
+
+    sim_clock[0] += 2.0  # 0.5 a second: one token
+    before = list(fake.requests)
+    assert not (await call(mcp_client, "stop_widgets")).is_error
+    assert fake.requests[len(before) :] == ["/attract/stop"]
+
+
+async def test_refused_restore_makes_no_currentgame_read(mcp_client, sim_clock, fake):
+    # Each blank_display is one token (two GETs: the /currentgame read and the stream).
+    for _ in range(int(limits.MARQUEE[0])):
+        assert not (await call(mcp_client, "blank_display")).is_error
+    sent_so_far = list(fake.requests)
+    r = await call(mcp_client, "show_current_game")
+    assert r.is_error and "Rate limit" in text(r)
+    assert fake.requests == sent_so_far  # no /currentgame read either
+
+
+async def test_every_session_starts_with_full_buckets(settings, fake, monkeypatch):
+    monkeypatch.setattr(server, "load_settings", lambda: settings)
+    async with server.lifespan(server.mcp):
+        server.marquee_bucket.take(limits.MARQUEE[0])  # drain it
+        assert server.marquee_bucket.tokens < 1
+    async with server.lifespan(server.mcp):
+        assert server.marquee_bucket.tokens == limits.MARQUEE[0]
+        assert server.pulse_bucket.tokens == limits.PULSE[0]
+        assert server.widget_bucket.tokens == limits.WIDGET[0]
