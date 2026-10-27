@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, remote
+from .client import PixelcadeClient
 from .config import flag, load_settings
 from .logsafe import setup_logging
 
@@ -142,6 +143,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+async def check_health() -> bool:
+    """Is pixelweb reachable? This is what /healthz reports, so a supervisor or Cloudflare sees the server go
+    unhealthy when the arcade does. While the server runs, its lifespan has made the shared client, and this
+    reuses it. Before any MCP session has started, it makes a short-lived client, so /healthz still answers."""
+    from . import server  # late, like main: the server module builds the MCP app, which other commands don't need
+
+    if server._client is not None:
+        return bool((await server._client.status())["reachable"])
+    client = PixelcadeClient(load_settings())
+    try:
+        return bool((await client.status())["reachable"])
+    finally:
+        await client.aclose()
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -162,7 +178,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if getattr(args, "http", False):  # absent when no subcommand was given: plain `mcp-server-pixelcade` is stdio
         try:
-            remote.serve_http(mcp, remote.http_config(args))
+            remote.serve_http(mcp, remote.http_config(args), health_check=check_health)
         except remote.ConfigError as exc:
             parser.exit(2, f"mcp-server-pixelcade: {exc}\n")
     else:

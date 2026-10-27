@@ -33,6 +33,7 @@ ALL_TOOLS = {
     "pulse_fill",
     "pulse_clear",
     "set_pulse_brightness",
+    "clear_queue",
 }
 
 
@@ -340,7 +341,7 @@ async def test_unreachable_pixelweb_explains_itself(settings, monkeypatch):
 ACTIONS = {
     "show_game_marquee", "show_console_marquee", "show_current_game", "show_text", "play_animation",
     "show_widget", "stop_widgets", "blank_display", "show_default_marquee", "pulse_effect", "pulse_fill",
-    "pulse_clear", "set_pulse_brightness",
+    "pulse_clear", "set_pulse_brightness", "clear_queue",
 }  # fmt: skip
 
 
@@ -379,6 +380,7 @@ async def test_dry_run_reads_but_sends_nothing(dry_client, fake):
         ("play_animation", {"name": "0rain"}), ("show_widget", {"widget": "clock"}), ("stop_widgets", {}),
         ("blank_display", {}), ("show_default_marquee", {}), ("pulse_effect", {"zone": "left_strip", "effect": "fire"}),
         ("pulse_fill", {"zone": "0", "color": "red"}), ("pulse_clear", {}), ("set_pulse_brightness", {"level": 10}),
+        ("clear_queue", {}),
     ]:  # fmt: skip
         assert (await call(dry_client, tool, **args)).structured_content["outcome"] == "dry_run", tool
     reads = {"/info", "/currentgame", "/ledstrip/getbrightness"}
@@ -499,3 +501,43 @@ async def test_every_session_starts_with_full_buckets(settings, fake, monkeypatc
         assert server.marquee_bucket.tokens == limits.MARQUEE[0]
         assert server.pulse_bucket.tokens == limits.PULSE[0]
         assert server.widget_bucket.tokens == limits.WIDGET[0]
+
+
+# --- clear_queue ---------------------------------------------------------------------------------
+async def test_clear_queue_stops_then_restores_the_frontend(mcp_client, fake):
+    await call(mcp_client, "show_game_marquee", system="mame", rom="galaga")
+    fake.handle("/arcade/stream/snes/Super%20Metroid?event=FEScroll")  # the user scrolls
+    before = len(fake.requests)
+    r = (await call(mcp_client, "clear_queue")).structured_content
+    assert r["outcome"] == "done" and r["warnings"] == []
+    assert r["sent"] == ["GET /attract/stop", "GET /arcade/stream/snes/Super%20Metroid"]
+    assert fake.requests[before:] == ["/attract/stop", "/currentgame", "/arcade/stream/snes/Super%20Metroid"]
+
+
+async def test_clear_queue_without_restore_only_stops(mcp_client, fake):
+    r = (await call(mcp_client, "clear_queue", restore_current=False)).structured_content
+    assert (r["sent"], fake.requests) == (["GET /attract/stop"], ["/attract/stop"])
+
+
+async def test_clear_queue_with_no_frontend_game_still_clears(mcp_client, fake):
+    fake.routes["/currentgame"] = (200, "")
+    r = (await call(mcp_client, "clear_queue")).structured_content
+    assert r["outcome"] == "done" and r["sent"] == ["GET /attract/stop"]
+    assert len(r["warnings"]) == 1 and "nothing to restore" in r["warnings"][0]
+
+
+async def test_clear_queue_spends_one_token_even_when_it_restores(mcp_client, sim_clock, fake):
+    await call(mcp_client, "show_game_marquee", system="mame", rom="galaga")  # one token
+    fake.handle("/arcade/stream/snes/Super%20Metroid?event=FEScroll")
+    before = server.marquee_bucket.tokens
+    assert not (await call(mcp_client, "clear_queue")).is_error
+    assert server.marquee_bucket.tokens == before - 1  # not two: the restore doesn't throttle again
+
+
+async def test_refused_clear_queue_sends_nothing(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.MARQUEE[0])):
+        await call(mcp_client, "blank_display")
+    before = list(fake.requests)
+    r = await call(mcp_client, "clear_queue")
+    assert r.is_error and "clear the queue" in text(r)
+    assert fake.requests == before

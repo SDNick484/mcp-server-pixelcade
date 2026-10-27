@@ -395,15 +395,8 @@ async def show_console_marquee(system: System, fallback_text: FallbackText = Non
     return await _show_marquee(s, None, ["console", "stream", s], query, f"Showing the {s} system marquee")
 
 
-@mcp.tool(title="Restore the frontend's marquee", annotations=_SET)
-async def show_current_game() -> ActionResult:
-    """Put back the marquee the arcade frontend last showed (the game or system selected there), e.g. after
-    showing text or another game's marquee.
-
-    After the cabinet's screensaver has run, this is the last game the screensaver showed, not the one the
-    user had selected, until they scroll in the frontend again.
-    """
-    _throttle(marquee_bucket, "restore the frontend's marquee")
+async def _restore_frontend() -> ActionResult:
+    """show_current_game without the rate limit, so clear_queue can restore the marquee as part of its one action."""
     cur = await _current()
     # Shown after our last marquee means the frontend (or the screensaver) moved on: use that.
     newer = cur is not None and _key(cur["system"], cur["rom"]) != _marquees.ours
@@ -427,6 +420,57 @@ async def show_current_game() -> ActionResult:
     if result["outcome"] == "done":
         _marquees.ours = None  # what's showing is the frontend's again
     return result
+
+
+@mcp.tool(title="Restore the frontend's marquee", annotations=_SET)
+async def show_current_game() -> ActionResult:
+    """Put back the marquee the arcade frontend last showed (the game or system selected there), e.g. after
+    showing text or another game's marquee.
+
+    After the cabinet's screensaver has run, this is the last game the screensaver showed, not the one the
+    user had selected, until they scroll in the frontend again.
+    """
+    _throttle(marquee_bucket, "restore the frontend's marquee")
+    return await _restore_frontend()
+
+
+@mcp.tool(title="Clear queue", annotations=_SET)
+async def clear_queue(
+    restore_current: Annotated[
+        bool,
+        Field(
+            description="Afterwards, put back the frontend's marquee (the default). False leaves the marquee "
+            "as the queue clear left it."
+        ),
+    ] = True,
+) -> ActionResult:
+    """Clear the marquee queue: stop the queued items that are playing (queued with loops) and drop the rest.
+
+    This uses the same request as stop_widgets, so it also stops any widget and ends an attract-mode lock.
+    Unless restore_current is false, the frontend's marquee comes back afterwards. If no frontend game is
+    known, the queue is still cleared and the warnings say the marquee wasn't restored.
+    """
+    _throttle(marquee_bucket, "clear the queue")
+    first = await _send(["attract", "stop"], [], "Cleared the queue")
+    if not restore_current:
+        return first
+    try:
+        second = await _restore_frontend()
+    except PixelcadeError as exc:
+        return ActionResult(
+            pixelcade=first["pixelcade"],
+            outcome=first["outcome"],
+            detail=first["detail"],
+            sent=first["sent"],
+            warnings=first["warnings"] + [str(exc)],
+        )
+    return ActionResult(
+        pixelcade=first["pixelcade"],
+        outcome=first["outcome"],
+        detail=f"{first['detail']}; {second['detail']}",
+        sent=first["sent"] + second["sent"],
+        warnings=first["warnings"] + second["warnings"],
+    )
 
 
 @mcp.tool(title="Show the default marquee", annotations=_SET)
