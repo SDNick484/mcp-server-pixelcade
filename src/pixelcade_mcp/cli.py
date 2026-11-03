@@ -101,9 +101,16 @@ async def _cmd_call(tool: str, raw_args: list[str]) -> int:
     async with Client(mcp) as c:
         if tool == "tools":
             for t in (await c.list_tools()).tools:
-                print(f"{t.name:<16} {(t.description or '').splitlines()[0]}")
+                print(f"{t.name:<28} {(t.description or '').splitlines()[0]}")
             return 0
-        result = await c.call_tool(tool, tool_args)
+        available = {t.name for t in (await c.list_tools()).tools}
+        target_tool = tool
+        if target_tool not in available:
+            if f"pixelcade_{target_tool}" in available:
+                target_tool = f"pixelcade_{target_tool}"
+            elif target_tool in ("status", "get_status") and "pixelcade_get_status" in available:
+                target_tool = "pixelcade_get_status"
+        result = await c.call_tool(target_tool, tool_args)
     if result.is_error:
         print(" ".join(getattr(part, "text", "") for part in result.content) or "error", file=sys.stderr)
         return 1

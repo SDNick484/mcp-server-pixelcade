@@ -133,6 +133,8 @@ def test_call(env, capsys):
     code, out, _ = run(["call", "show_text", "text=HELLO", "color=cyan"], capsys)
     assert code == 0 and json.loads(out)["sent"] == ["GET /text?t=HELLO&c=cyan"]
     assert env.last == "/text?t=HELLO&c=cyan"
+    code, out, _ = run(["call", "pixelcade_show_text", "text=HELLO", "color=cyan"], capsys)
+    assert code == 0 and json.loads(out)["sent"] == ["GET /text?t=HELLO&c=cyan"]
 
 
 def test_call_dry_run_sends_nothing(env, capsys):

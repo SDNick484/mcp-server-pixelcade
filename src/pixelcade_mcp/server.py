@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, TypeVar
 
 from mcp.server import MCPServer
-from mcp.types import ToolAnnotations
 from pydantic import Field
 from typing_extensions import TypedDict
 
@@ -48,7 +47,9 @@ from .client import (
 from .config import ClockStyle, SportsLeague, load_settings
 from .effects import EFFECTS, PATTERNS, EffectCategory
 from .limits import MARQUEE, PULSE, WIDGET, bucket
+from .lookup import unknown_with_suggestions
 from .ratelimit import TokenBucket, refusal
+from .tools import ACT, ACT_IDEMPOTENT, READ_ONLY
 
 log = logging.getLogger(__name__)
 
@@ -127,18 +128,32 @@ async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
         _client = None
 
 
+def reset_rate_limiters() -> None:
+    """Reset rate limiting token buckets to full capacity (used in testing)."""
+    global marquee_bucket, pulse_bucket, widget_bucket
+    marquee_bucket = bucket(MARQUEE)
+    pulse_bucket = bucket(PULSE)
+    widget_bucket = bucket(WIDGET)
+
+
 mcp = MCPServer(
     "pixelcade",
     instructions=(
-        "Controls a Pixelcade LED marquee (128x32 pixels) on an arcade cabinet, and optional Pixelcade Pulse "
-        "LED strips, speaker rings and matrices, through Pixelcade's pixelweb listener. "
-        "Call get_status first: it says whether the arcade is reachable, which game is selected, and whether "
-        "Pulse strips are configured. The arcade frontend (EmulationStation on Batocera) also drives the marquee: "
-        "scrolling to or launching a game replaces whatever you showed, and launching a game stops widgets. "
-        "Use show_current_game to put the frontend's marquee back, or show_default_marquee for the default one. "
+        "Controls a Pixelcade LED marquee (128x32 or 128x64 pixels) on an arcade cabinet, and optional Pixelcade Pulse "
+        "LED strips, speaker rings, and matrices through Pixelcade's pixelweb REST API.\n\n"
+        "Ecosystem Signal Chain & Topology:\n"
+        "- Video / Gaming: Batocera Linux or MiSTer FPGA drives the cabinet monitor and audio.\n"
+        "- Marquee Display: Pixelcade acts as the dynamic auxiliary display. When games launch in Batocera or MiSTer, "
+        "marquee artwork is updated to reflect the active title.\n"
+        "- Lighting & Pulse: Pixelcade Pulse coordinates ambient cabinet lighting and underglow effects.\n"
+        "- Call pixelcade_get_status first to check connectivity, active game, and Pulse hardware availability.\n\n"
         # ASSUMPTION PX-FRONTEND, PX-ATTRACT-LOCK
-        "While the cabinet's screensaver runs, Pixelcade locks the marquee in attract mode: other calls still "
-        "succeed but change nothing until stop_widgets ends the lock. A widget shown with lock=true does the same."
+        "Usage Guidelines:\n"
+        "- The arcade frontend (e.g., EmulationStation on Batocera) also drives the marquee: scrolling or launching "
+        "a game replaces custom marquees and stops widgets.\n"
+        "- Use pixelcade_show_current_game to restore the frontend's marquee or "
+        "pixelcade_show_default_marquee for the fallback.\n"
+        "- While screensavers or locked widgets run (lock=True), call pixelcade_stop_widgets to release attract mode."
     ),
     lifespan=lifespan,
 )
@@ -146,9 +161,9 @@ mcp = MCPServer(
 # Annotations are hints clients use to decide what needs confirmation. Nothing
 # here is destructive: every display change is undone by the next one (or by
 # the frontend). open_world_hint=False: we only talk to one known device.
-_READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
-_ACT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
-_SET = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+_READ = READ_ONLY
+_ACT = ACT
+_SET = ACT_IDEMPOTENT
 
 T = TypeVar("T")
 
@@ -210,14 +225,19 @@ async def _send(segments: list[str], query: Query, detail: str) -> ActionResult:
 
 
 # --- Reading ---------------------------------------------------------------
-@mcp.tool(title="Get Pixelcade status", annotations=_READ)
-async def get_status() -> Status:
-    """Report whether the Pixelcade is reachable, its hardware and software versions, the game last
-    selected in the arcade frontend, whether animated marquees are on, and Pulse LED strip state
-    (whether configured, pixel count, brightness, the brightness cap this server enforces, and whether
-    the board answers: pulse.responding false means Pulse tools won't work, e.g. no strips connected).
+@mcp.tool(title="Get Pixelcade status", annotations=READ_ONLY)
+async def pixelcade_get_status() -> Status:
+    """<use_case>
+    Report whether the Pixelcade marquee and Pulse lighting controller are reachable,
+    software and firmware versions, the game or system marquee last shown by the frontend,
+    and Pulse LED strip state.
+    </use_case>
 
-    When unreachable, reachable is false and error says why; nothing else is known then.
+    <important_notes>
+    - Always call this tool first before sending marquee displays or Pulse commands.
+    - When reachable is False, error explains why (e.g. host powered down or network timeout).
+    - pulse.responding is False when strips are configured but disconnected or unpowered.
+    </important_notes>
     """
     return await client().status()
 
@@ -230,8 +250,8 @@ class ArtworkList(TypedDict):
     truncated: bool
 
 
-@mcp.tool(title="List marquee artwork", annotations=_READ)
-async def list_artwork(
+@mcp.tool(title="List marquee artwork", annotations=READ_ONLY)
+async def pixelcade_list_artwork(
     folder: Annotated[
         str,
         Field(
@@ -251,10 +271,15 @@ async def list_artwork(
     ] = "any",
     limit: Annotated[int, Field(ge=1, le=500, description="Maximum names to return.")] = 100,
 ) -> ArtworkList:
-    """List the artwork pixelweb has in one folder, one row per name, saying whether a still and an animated
-    version exist. A name works as the rom for show_game_marquee with that system (or as play_animation's name
-    for folder 'animations'). Names come in more than one style: MAME short names (pacman) and full titles
-    (Galaga (Midway, Set 1)); the frontend uses the ROM file's name, so check with contains first.
+    """<use_case>
+    List available marquee artwork in a folder, indicating whether still (PNG/JPG) or animated (GIF) versions exist.
+    </use_case>
+
+    <important_notes>
+    - folder is typically a system name ('mame', 'snes', 'nes', 'neogeo', 'genesis') or 'console', 'animations', 'user'.
+    - Artwork names can be passed as the rom parameter to pixelcade_show_game_marquee.
+    - Use contains to filter titles and reduce payload size.
+    </important_notes>
     """
     # ASSUMPTION PX-IMAGES-LIST: the endpoint pixelweb's own artwork browser uses. The documented
     # /arcade/list, /still/list and /animations/list don't exist (PX-LISTS).
@@ -264,9 +289,27 @@ async def list_artwork(
     except PixelcadeError as exc:
         if exc.status != 400:
             raise
+        known_folders = [
+            "mame",
+            "snes",
+            "nes",
+            "neogeo",
+            "genesis",
+            "megadrive",
+            "arcade",
+            "console",
+            "animations",
+            "user",
+        ]
         raise PixelcadeError(
-            f"There's no artwork folder named '{f}' on the arcade. Folders are named after Batocera systems "
-            "(mame, snes, ...), plus console, animations and user.",
+            unknown_with_suggestions(
+                "Artwork folder",
+                f,
+                known_folders,
+                fallback=(
+                    "Folders are named after Batocera systems (mame, snes, ...), plus console, animations and user."
+                ),
+            ),
             status=400,
         ) from exc
     rows = parse_artwork(data)
@@ -294,13 +337,18 @@ class EffectCatalog(TypedDict):
     zones: list[str]
 
 
-@mcp.tool(title="List Pulse effects", annotations=_READ)
-def list_pulse_effects(
+@mcp.tool(title="List Pulse effects", annotations=READ_ONLY)
+def pixelcade_list_pulse_effects(
     category: Annotated[EffectCategory | None, Field(description="Only this category; omit for all.")] = None,
 ) -> EffectCatalog:
-    """List Pixelcade Pulse effect names for pulse_effect, by category, plus name patterns for per-game
-    and per-system effects (e.g. mame_<rom>), and the named zones. matrix_* effects are for the 8x8/8x32
-    matrices; the rest suit strips and speaker rings.
+    """<use_case>
+    List available Pixelcade Pulse lighting effect names by category, along with name patterns and named zones.
+    </use_case>
+
+    <important_notes>
+    - Does not require active hardware or network communication.
+    - matrix_* effects target 8x8/8x32 LED matrices; other effects target strips and speaker rings.
+    </important_notes>
     """
     chosen = {category: EFFECTS[category]} if category else EFFECTS
     return EffectCatalog(
@@ -336,8 +384,8 @@ def _pulse_flags(pulse: str) -> Query:
     return {"follow": [], "skip": [("nostrip", None)], "off": [("clearstrip", None)]}[pulse]
 
 
-@mcp.tool(title="Show a game marquee", annotations=_SET)
-async def show_game_marquee(
+@mcp.tool(title="Show a game marquee", annotations=ACT_IDEMPOTENT)
+async def pixelcade_show_game_marquee(
     system: System,
     rom: Rom,
     animation: Annotated[
@@ -364,9 +412,15 @@ async def show_game_marquee(
         Field(description="Pulse LED strips: follow the game's theme, leave them as they are, or turn them off."),
     ] = "follow",
 ) -> ActionResult:
-    """Show a game's marquee artwork, the way the frontend does when you scroll to that game.
+    """<use_case>
+    Display a game's marquee artwork on the Pixelcade LED display.
+    </use_case>
 
-    If the game has no artwork, Pixelcade shows fallback_text if given, otherwise a default marquee.
+    <important_notes>
+    - Replaces whatever is currently displayed unless loops is specified to queue it.
+    - Frontend navigation or game launches will overwrite this display.
+    - If the game has no artwork, fallback_text or the default marquee is displayed.
+    </important_notes>
     """
     _throttle(marquee_bucket, "show a game's marquee")
     s = _check(cfg.path_segment, system, "system", 60)
@@ -386,9 +440,17 @@ async def show_game_marquee(
     return await _show_marquee(s, r, ["arcade", "stream", s, r], query, verb)
 
 
-@mcp.tool(title="Show a system marquee", annotations=_SET)
-async def show_console_marquee(system: System, fallback_text: FallbackText = None) -> ActionResult:
-    """Show a system/console marquee (e.g. 'snes', 'genesis', 'mame'), as when browsing the system list."""
+@mcp.tool(title="Show a system marquee", annotations=ACT_IDEMPOTENT)
+async def pixelcade_show_console_marquee(system: System, fallback_text: FallbackText = None) -> ActionResult:
+    """<use_case>
+    Display a console or system banner marquee (e.g., 'snes', 'genesis', 'mame').
+    </use_case>
+
+    <important_notes>
+    - Typically displayed when browsing the system wheel in EmulationStation.
+    - If artwork is missing, optional fallback_text will scroll.
+    </important_notes>
+    """
     _throttle(marquee_bucket, "show a system marquee")
     s = _check(cfg.path_segment, system, "system", 60)
     query: Query = [("t", _check(_one_line, fallback_text))] if fallback_text else []
@@ -422,20 +484,23 @@ async def _restore_frontend() -> ActionResult:
     return result
 
 
-@mcp.tool(title="Restore the frontend's marquee", annotations=_SET)
-async def show_current_game() -> ActionResult:
-    """Put back the marquee the arcade frontend last showed (the game or system selected there), e.g. after
-    showing text or another game's marquee.
+@mcp.tool(title="Restore the frontend's marquee", annotations=ACT_IDEMPOTENT)
+async def pixelcade_show_current_game() -> ActionResult:
+    """<use_case>
+    Restore the marquee artwork corresponding to the game or system currently selected in the frontend.
+    </use_case>
 
-    After the cabinet's screensaver has run, this is the last game the screensaver showed, not the one the
-    user had selected, until they scroll in the frontend again.
+    <important_notes>
+    - Useful after displaying temporary custom text or alerts to return the marquee to cabinet context.
+    - If attract mode or screensaver was active, restores the last game known before screensaver.
+    </important_notes>
     """
     _throttle(marquee_bucket, "restore the frontend's marquee")
     return await _restore_frontend()
 
 
-@mcp.tool(title="Clear queue", annotations=_SET)
-async def clear_queue(
+@mcp.tool(title="Clear queue", annotations=ACT_IDEMPOTENT)
+async def pixelcade_clear_queue(
     restore_current: Annotated[
         bool,
         Field(
@@ -444,11 +509,14 @@ async def clear_queue(
         ),
     ] = True,
 ) -> ActionResult:
-    """Clear the marquee queue: stop the queued items that are playing (queued with loops) and drop the rest.
+    """<use_case>
+    Clear the marquee queue: stop queued items that are playing and drop pending queue items.
+    </use_case>
 
-    This uses the same request as stop_widgets, so it also stops any widget and ends an attract-mode lock.
-    Unless restore_current is false, the frontend's marquee comes back afterwards. If no frontend game is
-    known, the queue is still cleared and the warnings say the marquee wasn't restored.
+    <important_notes>
+    - Uses attract stop command, so also halts active widgets or attract-mode locks.
+    - If restore_current is True (default), restores the frontend's active game/system marquee.
+    </important_notes>
     """
     _throttle(marquee_bucket, "clear the queue")
     first = await _send(["attract", "stop"], [], "Cleared the queue")
@@ -473,10 +541,16 @@ async def clear_queue(
     )
 
 
-@mcp.tool(title="Show the default marquee", annotations=_SET)
-async def show_default_marquee() -> ActionResult:
-    """Show Pixelcade's default marquee (the one it uses when a game has no artwork), e.g. when no game is
-    selected or to clear text. Needs pixelweb 8.0.14 or later; get_status shows the version.
+@mcp.tool(title="Show the default marquee", annotations=ACT_IDEMPOTENT)
+async def pixelcade_show_default_marquee() -> ActionResult:
+    """<use_case>
+    Display the Pixelcade default marquee artwork (fallback artwork).
+    </use_case>
+
+    <important_notes>
+    - Requires pixelweb version 8.0.14 or later.
+    - Used when no game is active or to clear custom text.
+    </important_notes>
     """
     _throttle(marquee_bucket, "show the default marquee")
     try:
@@ -516,8 +590,8 @@ Color = Annotated[
 ]
 
 
-@mcp.tool(title="Show text on the marquee", annotations=_SET)
-async def show_text(
+@mcp.tool(title="Show text on the marquee", annotations=ACT_IDEMPOTENT)
+async def pixelcade_show_text(
     text: Annotated[
         str, Field(min_length=1, max_length=500, description="The message. Use newlines with lines=2 or 4.")
     ],
@@ -546,7 +620,16 @@ async def show_text(
     ] = None,
     left_justify: bool = False,
 ) -> ActionResult:
-    """Show a message on the marquee, e.g. 'GAME NIGHT 7PM' or a high score."""
+    """<use_case>
+    Display custom text messages (scrolling or static) on the LED marquee.
+    </use_case>
+
+    <important_notes>
+    - Supports multi-line layouts (lines=2 or lines=4) using newlines.
+    - blink_ms is only supported for text of 9 characters or fewer.
+    - loops=-1 holds the text on screen until the next command is sent.
+    </important_notes>
+    """
     # Once for the whole call: with loops=-1, _hold sends twice, but that is still one action (one token).
     _throttle(marquee_bucket, "show text on the marquee")
     t = _check(_marquee_text, text)
@@ -593,8 +676,8 @@ async def _hold(segments: list[str], query: Query, detail: str) -> ActionResult:
     )
 
 
-@mcp.tool(title="Play an animation", annotations=_ACT)
-async def play_animation(
+@mcp.tool(title="Play an animation", annotations=ACT)
+async def pixelcade_play_animation(
     name: Annotated[
         str, Field(min_length=1, max_length=100, description="An animation name from list_artwork folder='animations'.")
     ],
@@ -603,15 +686,23 @@ async def play_animation(
         Field(default=None, ge=1, le=50, description="Queue it and play this many times; omit to play now."),
     ] = None,
 ) -> ActionResult:
-    """Play one of Pixelcade's built-in animations on the marquee (see list_artwork folder='animations')."""
+    """<use_case>
+    Play a built-in Pixelcade animation sequence on the marquee.
+    </use_case>
+
+    <important_notes>
+    - Animation names can be discovered via pixelcade_list_artwork(folder='animations').
+    - loops sets how many times the animation plays before completing.
+    </important_notes>
+    """
     _throttle(marquee_bucket, "play an animation")
     n = _check(cfg.path_segment, name, "animation name", 100)
     query: Query = [("l", loops)] if loops else []
     return await _send(["animations", "stream", n], query, f"Playing animation {n}")
 
 
-@mcp.tool(title="Show a widget", annotations=_SET)
-async def show_widget(
+@mcp.tool(title="Show a widget", annotations=ACT_IDEMPOTENT)
+async def pixelcade_show_widget(
     widget: Annotated[
         Literal["clock", "weather", "stocks", "sports", "attract"],
         Field(description="attract runs the user's Pixelcade attract-mode playlist."),
@@ -642,8 +733,14 @@ async def show_widget(
         ),
     ] = False,
 ) -> ActionResult:
-    """Show a live widget on the marquee: a clock (optionally arcade-themed), weather, a stock ticker,
-    sports scores, or the attract-mode playlist. Widgets keep running until replaced; stop_widgets ends them.
+    """<use_case>
+    Display a live widget on the marquee (arcade-themed clock, weather, stock ticker, sports scores, attract mode).
+    </use_case>
+
+    <important_notes>
+    - Widgets run continuously until replaced or stopped via pixelcade_stop_widgets.
+    - lock=True prevents frontend scrolling from interrupting the widget until stopped.
+    </important_notes>
     """
     _throttle(widget_bucket, "show a widget")
     extras = {"location": location, "tickers": tickers, "league": league, "teams": teams}
@@ -675,20 +772,32 @@ async def show_widget(
     return result
 
 
-@mcp.tool(title="Stop widgets", annotations=_SET)
-async def stop_widgets() -> ActionResult:
-    """Stop any running widget or attract mode and return the marquee to normal arcade mode.
+@mcp.tool(title="Stop widgets", annotations=ACT_IDEMPOTENT)
+async def pixelcade_stop_widgets() -> ActionResult:
+    """<use_case>
+    Stop any running widget or attract-mode loop and restore normal arcade operation.
+    </use_case>
 
-    This also ends the lock Pixelcade puts on the marquee while the cabinet's screensaver runs, so call it
-    first if marquee changes seem to be ignored. The screensaver itself keeps running.
+    <important_notes>
+    - Also clears the attract-mode lock set during screensavers or locked widgets.
+    - Call this first if marquee commands appear to be ignored.
+    </important_notes>
     """
     _throttle(widget_bucket, "stop widgets")
     return await _send(["attract", "stop"], [], "Stopped widgets")
 
 
-@mcp.tool(title="Blank the marquee", annotations=_SET)
-async def blank_display() -> ActionResult:
-    """Turn the marquee black (it stays on; the next marquee or text replaces the black screen)."""
+@mcp.tool(title="Blank the marquee", annotations=ACT_IDEMPOTENT)
+async def pixelcade_blank_display() -> ActionResult:
+    """<use_case>
+    Turn the LED marquee display black.
+    </use_case>
+
+    <important_notes>
+    - The display remains powered on in standby; next command will render immediately.
+    - Does not affect Pulse LED strips (use pixelcade_pulse_clear for lighting).
+    </important_notes>
+    """
     _throttle(marquee_bucket, "blank the marquee")
     return await _show_marquee("black", "dummy", ["arcade", "stream", "black", "dummy"], [], "The marquee is blank")
 
@@ -716,8 +825,8 @@ def _within_cap(value: int, what: str) -> None:
         )
 
 
-@mcp.tool(title="Run a Pulse effect", annotations=_ACT)
-async def pulse_effect(
+@mcp.tool(title="Run a Pulse effect", annotations=ACT)
+async def pixelcade_pulse_effect(
     zone: Zone,
     effect: Annotated[
         str, Field(min_length=1, max_length=80, description="Effect name from list_pulse_effects, e.g. 'rainbow'.")
@@ -732,8 +841,15 @@ async def pulse_effect(
     duration_s: Annotated[int | None, Field(default=None, ge=1, le=3600, description="Stop after this long.")] = None,
     reverse: bool = False,
 ) -> ActionResult:
-    """Run a lighting effect on one Pixelcade Pulse zone, e.g. 'rainbow' on left_strip or 'fire' on center_matrix.
-    Colors are optional; many effects have their own palette.
+    """<use_case>
+    Run a dynamic lighting effect on a designated Pixelcade Pulse zone (strips, speaker rings, matrices).
+    </use_case>
+
+    <important_notes>
+    - Rate limited to protect power supply and thermal dissipation.
+    - Intensity is capped by the server's pulse_max_brightness setting.
+    - Discover valid effect names with pixelcade_list_pulse_effects.
+    </important_notes>
     """
     _throttle(pulse_bucket, "run a Pulse effect")
     z = _check(cfg.zone_id, zone)
@@ -757,23 +873,38 @@ async def pulse_effect(
     return await _send(["ledstrip", "zone", z, "effect", e], query, f"Running {e} on {z}")
 
 
-@mcp.tool(title="Fill a Pulse zone with a color", annotations=_SET)
-async def pulse_fill(
+@mcp.tool(title="Fill a Pulse zone with a color", annotations=ACT_IDEMPOTENT)
+async def pixelcade_pulse_fill(
     zone: Zone,
     color: Annotated[str, Field(min_length=3, max_length=9, description="A color name or 6-digit hex.")],
 ) -> ActionResult:
-    """Set every LED in a Pulse zone to one solid color (stops any effect running there)."""
+    """<use_case>
+    Set all LEDs in a designated Pulse zone to a solid static color.
+    </use_case>
+
+    <important_notes>
+    - Stops any animated effect currently active in that zone.
+    - Rate limited to protect power supply from high-draw current surges.
+    </important_notes>
+    """
     _throttle(pulse_bucket, "fill a Pulse zone")
     z = _check(cfg.zone_id, zone)
     r, g, b = _check(cfg.rgb, color)
     return await _send(["ledstrip", "zone", z, "flood"], [("r", r), ("g", g), ("b", b)], f"Filled {z}")
 
 
-@mcp.tool(title="Turn Pulse LEDs off", annotations=_SET)
-async def pulse_clear(
+@mcp.tool(title="Turn Pulse LEDs off", annotations=ACT_IDEMPOTENT)
+async def pixelcade_pulse_clear(
     zone: Annotated[str | None, Field(default=None, max_length=20, description="One zone; omit for all LEDs.")] = None,
 ) -> ActionResult:
-    """Turn off Pulse LEDs and stop their effects: one zone, or everything if no zone is given."""
+    """<use_case>
+    Turn off Pulse LEDs and stop active lighting effects in one zone or across all zones.
+    </use_case>
+
+    <important_notes>
+    - Omit zone parameter to turn off all Pulse lighting strips, rings, and matrices simultaneously.
+    </important_notes>
+    """
     _throttle(pulse_bucket, "turn off Pulse LEDs")
     if zone is None:
         return await _send(["ledstrip", "clear"], [], "All Pulse LEDs are off")
@@ -781,11 +912,39 @@ async def pulse_clear(
     return await _send(["ledstrip", z, "clear"], [], f"{z} is off")  # ASSUMPTION PX-ZONES: no zone/ segment
 
 
-@mcp.tool(title="Set Pulse brightness", annotations=_SET)
-async def set_pulse_brightness(
+@mcp.tool(title="Set Pulse brightness", annotations=ACT_IDEMPOTENT)
+async def pixelcade_set_pulse_brightness(
     level: Annotated[int, Field(ge=0, le=255, description="0-255, limited by the server's cap (see get_status).")],
 ) -> ActionResult:
-    """Set the overall brightness of all Pulse LEDs."""
+    """<use_case>
+    Set the global brightness level for all Pixelcade Pulse LEDs.
+    </use_case>
+
+    <important_notes>
+    - Level must not exceed pulse_max_brightness (default 128) to protect hardware power rails.
+    - Rate limited to protect power supplies against rapid power cycling.
+    </important_notes>
+    """
     _throttle(pulse_bucket, "set Pulse brightness")
     _within_cap(level, "Brightness")
     return await _send(["ledstrip", "brightness", str(level)], [], f"Pulse brightness set to {level}")
+
+
+# Shorthand aliases for backwards compatibility and tests
+get_status = pixelcade_get_status
+list_artwork = pixelcade_list_artwork
+list_pulse_effects = pixelcade_list_pulse_effects
+show_game_marquee = pixelcade_show_game_marquee
+show_console_marquee = pixelcade_show_console_marquee
+show_current_game = pixelcade_show_current_game
+clear_queue = pixelcade_clear_queue
+show_default_marquee = pixelcade_show_default_marquee
+show_text = pixelcade_show_text
+play_animation = pixelcade_play_animation
+show_widget = pixelcade_show_widget
+stop_widgets = pixelcade_stop_widgets
+blank_display = pixelcade_blank_display
+pulse_effect = pixelcade_pulse_effect
+pulse_fill = pixelcade_pulse_fill
+pulse_clear = pixelcade_pulse_clear
+set_pulse_brightness = pixelcade_set_pulse_brightness

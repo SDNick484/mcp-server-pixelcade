@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from pixelcade_mcp import client as client_mod
+from pixelcade_mcp import server
 from pixelcade_mcp.config import Settings
 from pixelcade_mcp.sim.fake_pixelweb import FakePixelweb
 
@@ -98,6 +99,7 @@ def settings(fake) -> Settings:
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
     """Never read the user's real config or environment; keep the Pulse wait short."""
+    server.reset_rate_limiters()
     monkeypatch.setattr(client_mod, "PULSE_STATUS_TIMEOUT_S", 0.3)
     monkeypatch.setenv("PIXELCADE_CONFIG_DIR", str(tmp_path))
     for var in (

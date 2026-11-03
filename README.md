@@ -153,24 +153,26 @@ mirrored networking. A DHCP reservation plus the IP address is the dependable ch
 
 ## Tools
 
-| Tool                   | What it does                                                                                   |
-| ---------------------- | ---------------------------------------------------------------------------------------------- |
-| `get_status`           | Reachability, hardware/firmware/software versions, the frontend's selected game, Pulse state   |
-| `list_artwork`         | The marquees in one folder (a system, `console`, `animations`, `user`): names, still/animated |
-| `list_pulse_effects`   | Pulse effect names by category, per-game/per-system name patterns, and zone names              |
-| `show_game_marquee`    | A game's marquee by system + ROM name; still/animated choice, optional queueing and fallback text |
-| `show_console_marquee` | A system marquee, e.g. `snes`                                                                   |
-| `show_current_game`    | Put back the marquee for the game selected in EmulationStation                                  |
-| `show_default_marquee` | Pixelcade's default marquee (needs pixelweb 8.0.14+)                                            |
-| `show_text`            | Scrolling or fixed text: color, speed, loops, 1/2/4 lines, blink, left-justify                  |
-| `play_animation`       | One of Pixelcade's built-in animations                                                         |
-| `show_widget`          | Clock (19 arcade themes), weather, stocks, sports scores, or the attract-mode playlist          |
-| `stop_widgets`         | Stop widgets/attract mode and return to arcade mode                                            |
-| `blank_display`        | Black screen                                                                                   |
-| `pulse_effect`         | Run an effect on a Pulse zone (`rainbow`, `fire`, `mame_pacman`, …) with colors, speed, loops   |
-| `pulse_fill`           | Solid color on a zone                                                                          |
-| `pulse_clear`          | Turn off one zone, or all LEDs                                                                 |
-| `set_pulse_brightness` | Overall Pulse brightness, up to the server's cap                                               |
+All tools use the `pixelcade_` prefix to eliminate namespace collisions with sibling MCP servers in multi-server agent environments. The CLI supports shorthand names (`call show_text` resolves to `pixelcade_show_text`).
+
+| Tool                             | What it does                                                                                   |
+| -------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `pixelcade_get_status`           | Reachability, hardware/firmware/software versions, the frontend's selected game, Pulse state   |
+| `pixelcade_list_artwork`         | The marquees in one folder (a system, `console`, `animations`, `user`): names, still/animated |
+| `pixelcade_list_pulse_effects`   | Pulse effect names by category, per-game/per-system name patterns, and zone names              |
+| `pixelcade_show_game_marquee`    | A game's marquee by system + ROM name; still/animated choice, optional queueing and fallback text |
+| `pixelcade_show_console_marquee` | A system marquee, e.g. `snes`                                                                   |
+| `pixelcade_show_current_game`    | Put back the marquee for the game selected in EmulationStation                                  |
+| `pixelcade_show_default_marquee` | Pixelcade's default marquee (needs pixelweb 8.0.14+)                                            |
+| `pixelcade_show_text`            | Scrolling or fixed text: color, speed, loops, 1/2/4 lines, blink, left-justify                  |
+| `pixelcade_play_animation`       | One of Pixelcade's built-in animations                                                         |
+| `pixelcade_show_widget`          | Clock (19 arcade themes), weather, stocks, sports scores, or the attract-mode playlist          |
+| `pixelcade_stop_widgets`         | Stop widgets/attract mode and return to arcade mode                                            |
+| `pixelcade_blank_display`        | Black screen                                                                                   |
+| `pixelcade_pulse_effect`         | Run an effect on a Pulse zone (`rainbow`, `fire`, `mame_pacman`, …) with colors, speed, loops   |
+| `pixelcade_pulse_fill`           | Solid color on a zone                                                                          |
+| `pixelcade_pulse_clear`          | Turn off one zone, or all LEDs                                                                 |
+| `pixelcade_set_pulse_brightness` | Overall Pulse brightness, up to the server's cap                                               |
 
 **The frontend drives the marquee too.** EmulationStation's Pixelcade hooks call pixelweb whenever you
 scroll to a system or game, and every game launch calls `/attract/stop`. So whatever the model shows
@@ -203,6 +205,11 @@ Every tool that changes the display returns the same structured result as the si
 
 ## Safety design
 
+- **Namespace isolation.** Every tool is prefixed with `pixelcade_` to eliminate collision with other MCP servers in multi-server configurations.
+- **Hardware Rate Limiting.** Commands are regulated via TokenBucket rate limiters:
+  - USB serial queue protection (burst 6, refill 2/s) prevents buffer overruns on the V2 board.
+  - High-draw Pulse LED protection (burst 3, refill 0.5/s) prevents thermal and current overload.
+- **Network topology & PII masking.** Network URLs and IP addresses are masked (e.g. `http://x.x.x.50:8080`) in tool outputs, logs, and error messages via `mcp_shared.logsafe`.
 - **A fixed set of endpoints.** Paths are built in `server.py` from constants plus validated arguments.
   Pixelweb also serves `/quit`, `/reboot`, `/shutdown`, `/arcade/write` (writes the marquee's SD card),
   `/upload`, `/settings`, `/update/*` and `/ledstrip/numpixels`; none are reachable through this server.
@@ -218,6 +225,7 @@ Every tool that changes the display returns the same structured result as the si
   request, and without Access it serves only its own machine ([Service and Cloudflare](#service-and-cloudflare)).
 - Tools carry titles and MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`,
   `openWorldHint`). Nothing is marked destructive: every display change is undone by the next one.
+- Structured XML docstrings (`<use_case>` and `<important_notes>`) guide models on tool preconditions, display lifetimes, and routing.
 - Errors are actionable ("pixelweb isn't answering at …", "Can't resolve batocera.local; set
   PIXELCADE_URL to the IP"), and logs go to stderr because stdout belongs to the MCP transport.
 

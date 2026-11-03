@@ -1,0 +1,13 @@
+services:
+  pixelcade-mcp:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: sdnick484/mcp-server-pixelcade:latest
+    container_name: mcp-server-pixelcade
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - PIXELCADE_URL=http://batocera.local:8080
+      - MCP_HTTP_BIND=127.0.0.1
+      - MCP_HTTP_PORT=8718
