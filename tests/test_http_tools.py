@@ -70,9 +70,9 @@ def client(url: str, assertion: str | None) -> Client:
 @pytest.mark.anyio
 async def test_tools_work_over_http_with_a_valid_assertion(settings, fake, monkeypatch):
     async with serving(settings, monkeypatch) as url, client(url, token()) as c:
-        status = (await c.call_tool("get_status", {})).structured_content
+        status = (await c.call_tool("pixelcade_get_status", {})).structured_content
         assert status["reachable"] is True
-        r = (await c.call_tool("show_text", {"text": "GAME NIGHT"})).structured_content
+        r = (await c.call_tool("pixelcade_show_text", {"text": "GAME NIGHT"})).structured_content
         assert r["outcome"] == "done"
     assert any(p.startswith("/text?t=GAME%20NIGHT") for p in fake.requests)
 
@@ -92,7 +92,7 @@ async def test_tools_work_over_http_with_a_valid_assertion(settings, fake, monke
 async def test_bad_assertions_never_reach_pixelweb(settings, fake, monkeypatch, assertion):
     async with serving(settings, monkeypatch) as url, httpx2.AsyncClient() as http:
         headers = {remote.ACCESS_HEADER: assertion} if assertion else {}
-        params = {"name": "show_text", "arguments": {"text": "hi"}}
+        params = {"name": "pixelcade_show_text", "arguments": {"text": "hi"}}
         body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}
         resp = await http.post(url, json=body, headers=headers)
         assert (resp.status_code, resp.json()) == (403, {"error": "forbidden"})

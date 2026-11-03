@@ -28,6 +28,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from typing_extensions import TypedDict
 
 from .config import Settings
+from .logsafe import mask_ip, mask_url
 
 log = logging.getLogger(__name__)
 
@@ -228,20 +229,20 @@ class PixelcadeClient:
                 # configured but none are connected.
                 raise PixelcadeError(
                     f"pixelweb didn't answer a Pulse request within {wait:g}s. It has Pulse strips configured, "
-                    "but they may not be connected or powered (get_status: pulse.responding)."
+                    "but they may not be connected or powered (pixelcade_get_status: pulse.responding)."
                 ) from exc
             raise PixelcadeError(
-                f"pixelweb at {url} didn't answer within {wait:g}s. "
+                f"pixelweb at {mask_url(url)} didn't answer within {wait:g}s. "
                 "The arcade may be busy (a write to the marquee's SD card can take a while) or asleep."
             ) from exc
         except httpx.HTTPError as exc:
-            raise PixelcadeError(f"Talking to pixelweb at {url} failed: {exc}") from exc
+            raise PixelcadeError(f"Talking to pixelweb at {mask_url(url)} failed: {exc}") from exc
         body = resp.text
         if resp.status_code >= 400:
             snippet = body.strip()[:300] or resp.reason_phrase
             if resp.status_code == 404:  # ASSUMPTION PX-REPLIES
                 raise PixelcadeError(
-                    f"pixelweb at {url} has no {path.split('?')[0]} endpoint ({snippet}). "
+                    f"pixelweb at {mask_url(url)} has no {path.split('?')[0]} endpoint ({snippet}). "
                     "Pixelcade may need updating (re-run the Pixelcade installer on the arcade).",
                     status=404,
                 )
@@ -268,7 +269,7 @@ class PixelcadeClient:
             info = await self.get_json(["info"])  # ASSUMPTION PX-INFO
         except PixelcadeError as exc:
             return Status(
-                url=self.settings.url,
+                url=mask_url(self.settings.url),
                 dry_run=self.settings.dry_run,
                 reachable=False,
                 error=str(exc),
@@ -313,7 +314,7 @@ class PixelcadeClient:
         no_anim = info.get("noAnimatedMarquees")
 
         return Status(
-            url=self.settings.url,
+            url=mask_url(self.settings.url),
             dry_run=self.settings.dry_run,
             reachable=True,
             error=None,
@@ -337,15 +338,17 @@ class PixelcadeClient:
 
 
 def _connect_advice(url: str, exc: Exception) -> str:
-    host = httpx.URL(url).host
+    host = httpx.URL(url).host or "host"
+    masked_host = mask_ip(host)
+    masked_url = mask_url(url)
     msg = str(exc).lower()
     if "name or service not known" in msg or "nodename nor servname" in msg or "getaddrinfo" in msg:
         return (
-            f"Can't resolve {host}. mDNS (.local names) often doesn't cross VLANs or work under WSL2; "
+            f"Can't resolve {masked_host}. mDNS (.local names) often doesn't cross VLANs or work under WSL2; "
             "set PIXELCADE_URL to the arcade's IP address, e.g. http://192.168.1.50:8080."
         )
     return (
-        f"pixelweb isn't answering at {url}. Is the arcade powered on and on the network? "
+        f"pixelweb isn't answering at {masked_url}. Is the arcade powered on and on the network? "
         "On Batocera, pixelweb is started from /userdata/system/custom.sh; "
         "check it is running with `ssh root@batocera.local pgrep -a pixelweb`."
     )

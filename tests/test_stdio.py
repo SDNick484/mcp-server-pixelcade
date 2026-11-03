@@ -26,5 +26,5 @@ async def test_serve_over_stdio(tmp_path):
     params = StdioServerParameters(command=exe, args=[], env=env)
     async with Client(params) as c:
         assert {t.name for t in (await c.list_tools()).tools} == ALL_TOOLS
-        status = (await c.call_tool("get_status", {})).structured_content
+        status = (await c.call_tool("pixelcade_get_status", {})).structured_content
         assert status["reachable"] is False and "isn't answering" in status["error"]
