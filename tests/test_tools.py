@@ -155,14 +155,22 @@ async def test_list_pulse_effects_needs_no_device(mcp_client, fake):
 
 # --- The marquee ---------------------------------------------------------------
 async def test_show_game_marquee(mcp_client, fake):
-    r = await call(mcp_client, "pixelcade_show_game_marquee", system="snes", rom="Super Mario World (USA)", animation="still")
+    r = await call(
+        mcp_client, "pixelcade_show_game_marquee", system="snes", rom="Super Mario World (USA)", animation="still"
+    )
     assert not r.is_error
     assert fake.last == "/arcade/stream/snes/Super%20Mario%20World%20%28USA%29?nogif"
 
 
 async def test_show_game_marquee_queued_with_fallback_and_strips_off(mcp_client, fake):
     await call(
-        mcp_client, "pixelcade_show_game_marquee", system="mame", rom="pacman", loops=3, fallback_text="PAC-MAN", pulse="off"
+        mcp_client,
+        "pixelcade_show_game_marquee",
+        system="mame",
+        rom="pacman",
+        loops=3,
+        fallback_text="PAC-MAN",
+        pulse="off",
     )
     assert fake.last == "/arcade/stream/mame/pacman?t=PAC-MAN&l=3&event=FEScroll&clearstrip"
 
@@ -222,7 +230,13 @@ async def test_show_current_game_with_nothing_shown(mcp_client, fake):
 
 async def test_show_text(mcp_client, fake):
     r = await call(
-        mcp_client, "pixelcade_show_text", text="HIGH SCORE\n999,990", color="#FF6D00", lines=2, scroll="fixed", loops=-1
+        mcp_client,
+        "pixelcade_show_text",
+        text="HIGH SCORE\n999,990",
+        color="#FF6D00",
+        lines=2,
+        scroll="fixed",
+        loops=-1,
     )
     assert not r.is_error
     # A real newline becomes pixelweb's literal backslash-n (encoded %5Cn).

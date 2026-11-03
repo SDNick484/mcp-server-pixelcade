@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, TypeVar
 
 from mcp.server import MCPServer
-from mcp.types import ToolAnnotations
 from pydantic import Field
 from typing_extensions import TypedDict
 
@@ -149,7 +148,8 @@ mcp = MCPServer(
         "Usage Guidelines:\n"
         "- The arcade frontend (e.g., EmulationStation on Batocera) also drives the marquee: scrolling or launching "
         "a game replaces custom marquees and stops widgets.\n"
-        "- Use pixelcade_show_current_game to restore the frontend's marquee or pixelcade_show_default_marquee for the fallback.\n"
+        "- Use pixelcade_show_current_game to restore the frontend's marquee or "
+        "pixelcade_show_default_marquee for the fallback.\n"
         "- While screensavers or locked widgets run (lock=True), call pixelcade_stop_widgets to release attract mode."
     ),
     lifespan=lifespan,
@@ -297,15 +297,25 @@ async def pixelcade_list_artwork(
         if exc.status != 400:
             raise
         known_folders = [
-            "mame", "snes", "nes", "neogeo", "genesis", "megadrive",
-            "arcade", "console", "animations", "user",
+            "mame",
+            "snes",
+            "nes",
+            "neogeo",
+            "genesis",
+            "megadrive",
+            "arcade",
+            "console",
+            "animations",
+            "user",
         ]
         raise PixelcadeError(
             unknown_with_suggestions(
                 "Artwork folder",
                 f,
                 known_folders,
-                fallback="Folders are named after Batocera systems (mame, snes, ...), plus console, animations and user.",
+                fallback=(
+                    "Folders are named after Batocera systems (mame, snes, ...), plus console, animations and user."
+                ),
             ),
             status=400,
         ) from exc
