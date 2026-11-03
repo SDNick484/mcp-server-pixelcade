@@ -12,7 +12,7 @@ import dataclasses
 import pytest
 from mcp import Client
 
-from pixelcade_mcp import server
+from pixelcade_mcp import limits, server
 
 pytestmark = pytest.mark.anyio
 
@@ -23,6 +23,7 @@ ALL_TOOLS = {
     "pixelcade_show_game_marquee",
     "pixelcade_show_console_marquee",
     "pixelcade_show_current_game",
+    "pixelcade_clear_queue",
     "pixelcade_show_default_marquee",
     "pixelcade_show_text",
     "pixelcade_play_animation",
@@ -53,7 +54,8 @@ def text(result) -> str:
 
 
 async def call(c: Client, tool: str, **args):
-    return await c.call_tool(tool, args)
+    name = tool if tool.startswith("pixelcade_") else f"pixelcade_{tool}"
+    return await c.call_tool(name, args)
 
 
 # --- tools/list ----------------------------------------------------------------
@@ -353,11 +355,21 @@ async def test_unreachable_pixelweb_explains_itself(settings, monkeypatch):
 
 # --- ActionResult and dry run ------------------------------------------------------------------
 ACTIONS = {
-    "pixelcade_show_game_marquee", "pixelcade_show_console_marquee", "pixelcade_show_current_game",
-    "pixelcade_show_text", "pixelcade_play_animation", "pixelcade_show_widget", "pixelcade_stop_widgets",
-    "pixelcade_blank_display", "pixelcade_show_default_marquee", "pixelcade_pulse_effect", "pixelcade_pulse_fill",
-    "pixelcade_pulse_clear", "pixelcade_set_pulse_brightness",
-}  # fmt: skip
+    "pixelcade_show_game_marquee",
+    "pixelcade_show_console_marquee",
+    "pixelcade_show_current_game",
+    "pixelcade_clear_queue",
+    "pixelcade_show_default_marquee",
+    "pixelcade_show_text",
+    "pixelcade_play_animation",
+    "pixelcade_show_widget",
+    "pixelcade_stop_widgets",
+    "pixelcade_blank_display",
+    "pixelcade_pulse_effect",
+    "pixelcade_pulse_fill",
+    "pixelcade_pulse_clear",
+    "pixelcade_set_pulse_brightness",
+}
 
 
 async def test_every_action_returns_an_action_result(mcp_client):
@@ -391,12 +403,18 @@ async def test_dry_run_reads_but_sends_nothing(dry_client, fake):
     assert (r["outcome"], r["sent"]) == ("dry_run", ["GET /arcade/stream/mame/galaga"])
     assert r["detail"].startswith("DRY RUN, nothing sent:")
     for tool, args in [
-        ("pixelcade_show_text", {"text": "x"}), ("pixelcade_show_console_marquee", {"system": "snes"}),
-        ("pixelcade_show_current_game", {}), ("pixelcade_play_animation", {"name": "0rain"}),
-        ("pixelcade_show_widget", {"widget": "clock"}), ("pixelcade_stop_widgets", {}),
-        ("pixelcade_blank_display", {}), ("pixelcade_show_default_marquee", {}),
+        ("pixelcade_show_text", {"text": "x"}),
+        ("pixelcade_show_console_marquee", {"system": "snes"}),
+        ("pixelcade_show_current_game", {}),
+        ("pixelcade_clear_queue", {}),
+        ("pixelcade_play_animation", {"name": "0rain"}),
+        ("pixelcade_show_widget", {"widget": "clock"}),
+        ("pixelcade_stop_widgets", {}),
+        ("pixelcade_blank_display", {}),
+        ("pixelcade_show_default_marquee", {}),
         ("pixelcade_pulse_effect", {"zone": "left_strip", "effect": "fire"}),
-        ("pixelcade_pulse_fill", {"zone": "0", "color": "red"}), ("pixelcade_pulse_clear", {}),
+        ("pixelcade_pulse_fill", {"zone": "0", "color": "red"}),
+        ("pixelcade_pulse_clear", {}),
         ("pixelcade_set_pulse_brightness", {"level": 10}),
     ]:  # fmt: skip
         assert (await call(dry_client, tool, **args)).structured_content["outcome"] == "dry_run", tool
@@ -424,23 +442,7 @@ async def test_unknown_endpoint_suggests_updating(mcp_client, fake):
     assert r.is_error and "updating" in text(r)
 
 
-# --- Rate Limits & Suggestions -----------------------------------------------------------------
-async def test_serial_rate_limit(mcp_client, fake):
-    server.reset_rate_limiters()
-    assert server._SERIAL_BUCKET.take(6.0) == 0.0
-    r = await call(mcp_client, "pixelcade_blank_display")
-    assert r.is_error
-    assert "throttled to protect the V2 board USB serial queue" in text(r)
-
-
-async def test_power_rate_limit(mcp_client, fake):
-    server.reset_rate_limiters()
-    assert server._POWER_BUCKET.take(3.0) == 0.0
-    r = await call(mcp_client, "pixelcade_set_pulse_brightness", level=64)
-    assert r.is_error
-    assert "throttled to protect power supply and prevent thermal strain" in text(r)
-
-
+# --- Masking & Suggestions -----------------------------------------------------------------
 async def test_masked_url_in_get_status(settings, monkeypatch):
     monkeypatch.setattr(server, "load_settings", lambda: dataclasses.replace(settings, url="http://192.168.1.50:8080"))
     async with Client(server.mcp) as c:
@@ -452,3 +454,139 @@ async def test_list_artwork_unknown_folder_suggestions(mcp_client, fake):
     r = await call(mcp_client, "pixelcade_list_artwork", folder="snes9x")
     assert r.is_error
     assert "'snes'" in text(r)
+
+
+# --- Rate limits (limits.py, server._throttle) ---------------------------------------------------
+@pytest.fixture
+def sim_clock(mcp_client, monkeypatch):
+    """Move the three buckets onto a clock the test advances by hand, starting full.
+
+    Depends on mcp_client so the lifespan has already built the real buckets; these replace them for the test.
+    The returned list holds the current time in seconds.
+    """
+    now = [0.0]
+
+    def clock() -> float:
+        return now[0]
+
+    monkeypatch.setattr(server, "marquee_bucket", limits.bucket(limits.MARQUEE, clock=clock))
+    monkeypatch.setattr(server, "pulse_bucket", limits.bucket(limits.PULSE, clock=clock))
+    monkeypatch.setattr(server, "widget_bucket", limits.bucket(limits.WIDGET, clock=clock))
+    return now
+
+
+async def test_text_burst_is_capped_then_refused_before_any_request(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.MARQUEE[0])):
+        assert not (await call(mcp_client, "show_text", text="HI")).is_error
+    sent_so_far = list(fake.requests)
+    r = await call(mcp_client, "show_text", text="HI")
+    assert r.is_error and "Rate limit" in text(r) and "show text on the marquee" in text(r)
+    assert fake.requests == sent_so_far  # the refused call reached pixelweb not at all
+
+
+async def test_held_text_spends_one_token_not_two(mcp_client, sim_clock, fake):
+    # loops=-1 sends two GETs (PX-HOLD), but it is one action, so one token.
+    assert not (await call(mcp_client, "show_text", text="HOLD", loops=-1)).is_error
+    assert len(fake.requests) == 2
+    assert server.marquee_bucket.tokens == limits.MARQUEE[0] - 1
+
+
+async def test_pulse_burst_is_capped_and_does_not_touch_the_marquee_bucket(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.PULSE[0])):
+        assert not (await call(mcp_client, "pulse_effect", zone="left_strip", effect="fire")).is_error
+    sent_so_far = list(fake.requests)
+    r = await call(mcp_client, "pulse_effect", zone="left_strip", effect="fire")
+    assert r.is_error and "run a Pulse effect" in text(r)
+    assert fake.requests == sent_so_far
+    # The LED burst left the marquee bucket alone: text still goes through.
+    assert not (await call(mcp_client, "show_text", text="STILL FINE")).is_error
+
+
+async def test_refill_follows_the_clock_and_never_exceeds_the_burst(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.MARQUEE[0])):
+        await call(mcp_client, "show_text", text="HI")
+    r = await call(mcp_client, "show_text", text="HI")
+    # One token at 2 a second is 0.5 s away; the message rounds the wait up to a whole second.
+    assert r.is_error and "try again in 1s" in text(r)
+
+    sim_clock[0] += 0.5  # exactly one token refills
+    assert not (await call(mcp_client, "show_text", text="HI")).is_error
+    assert (await call(mcp_client, "show_text", text="HI")).is_error
+
+    sim_clock[0] += 3600  # an hour idle refills to the burst, and no further
+    for _ in range(int(limits.MARQUEE[0])):
+        assert not (await call(mcp_client, "show_text", text="HI")).is_error
+    assert (await call(mcp_client, "show_text", text="HI")).is_error
+
+
+async def test_widget_bucket_is_shared_by_show_and_stop(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.WIDGET[0])):
+        assert not (await call(mcp_client, "show_widget", widget="clock")).is_error
+    r = await call(mcp_client, "stop_widgets")
+    assert r.is_error and "stop widgets" in text(r)
+
+    sim_clock[0] += 2.0  # 0.5 a second: one token
+    before = list(fake.requests)
+    assert not (await call(mcp_client, "stop_widgets")).is_error
+    assert fake.requests[len(before) :] == ["/attract/stop"]
+
+
+async def test_refused_restore_makes_no_currentgame_read(mcp_client, sim_clock, fake):
+    # Each blank_display is one token (two GETs: the /currentgame read and the stream).
+    for _ in range(int(limits.MARQUEE[0])):
+        assert not (await call(mcp_client, "blank_display")).is_error
+    sent_so_far = list(fake.requests)
+    r = await call(mcp_client, "show_current_game")
+    assert r.is_error and "Rate limit" in text(r)
+    assert fake.requests == sent_so_far  # no /currentgame read either
+
+
+async def test_every_session_starts_with_full_buckets(settings, fake, monkeypatch):
+    monkeypatch.setattr(server, "load_settings", lambda: settings)
+    async with server.lifespan(server.mcp):
+        server.marquee_bucket.take(limits.MARQUEE[0])  # drain it
+        assert server.marquee_bucket.tokens < 1
+    async with server.lifespan(server.mcp):
+        assert server.marquee_bucket.tokens == limits.MARQUEE[0]
+        assert server.pulse_bucket.tokens == limits.PULSE[0]
+        assert server.widget_bucket.tokens == limits.WIDGET[0]
+
+
+# --- clear_queue ---------------------------------------------------------------------------------
+async def test_clear_queue_stops_then_restores_the_frontend(mcp_client, fake):
+    await call(mcp_client, "show_game_marquee", system="mame", rom="galaga")
+    fake.handle("/arcade/stream/snes/Super%20Metroid?event=FEScroll")  # the user scrolls
+    before = len(fake.requests)
+    r = (await call(mcp_client, "clear_queue")).structured_content
+    assert r["outcome"] == "done" and r["warnings"] == []
+    assert r["sent"] == ["GET /attract/stop", "GET /arcade/stream/snes/Super%20Metroid"]
+    assert fake.requests[before:] == ["/attract/stop", "/currentgame", "/arcade/stream/snes/Super%20Metroid"]
+
+
+async def test_clear_queue_without_restore_only_stops(mcp_client, fake):
+    r = (await call(mcp_client, "clear_queue", restore_current=False)).structured_content
+    assert (r["sent"], fake.requests) == (["GET /attract/stop"], ["/attract/stop"])
+
+
+async def test_clear_queue_with_no_frontend_game_still_clears(mcp_client, fake):
+    fake.routes["/currentgame"] = (200, "")
+    r = (await call(mcp_client, "clear_queue")).structured_content
+    assert r["outcome"] == "done" and r["sent"] == ["GET /attract/stop"]
+    assert len(r["warnings"]) == 1 and "nothing to restore" in r["warnings"][0]
+
+
+async def test_clear_queue_spends_one_token_even_when_it_restores(mcp_client, sim_clock, fake):
+    await call(mcp_client, "show_game_marquee", system="mame", rom="galaga")  # one token
+    fake.handle("/arcade/stream/snes/Super%20Metroid?event=FEScroll")
+    before = server.marquee_bucket.tokens
+    assert not (await call(mcp_client, "clear_queue")).is_error
+    assert server.marquee_bucket.tokens == before - 1  # not two: the restore doesn't throttle again
+
+
+async def test_refused_clear_queue_sends_nothing(mcp_client, sim_clock, fake):
+    for _ in range(int(limits.MARQUEE[0])):
+        await call(mcp_client, "blank_display")
+    before = list(fake.requests)
+    r = await call(mcp_client, "clear_queue")
+    assert r.is_error and "clear the queue" in text(r)
+    assert fake.requests == before

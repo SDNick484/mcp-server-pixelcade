@@ -46,6 +46,7 @@ from .client import (
 )
 from .config import ClockStyle, SportsLeague, load_settings
 from .effects import EFFECTS, PATTERNS, EffectCategory
+from .limits import MARQUEE, PULSE, WIDGET, bucket
 from .lookup import unknown_with_suggestions
 from .ratelimit import TokenBucket, refusal
 from .tools import ACT, ACT_IDEMPOTENT, READ_ONLY
@@ -66,6 +67,12 @@ class _Marquees:
 
 
 _marquees = _Marquees()
+
+# One token bucket per group of tools (limits.py has the rates). Module-level so every tool shares them;
+# lifespan() replaces them, so each server session starts full, the way _marquees does.
+marquee_bucket: TokenBucket = bucket(MARQUEE)
+pulse_bucket: TokenBucket = bucket(PULSE)
+widget_bucket: TokenBucket = bucket(WIDGET)
 
 
 def _key(system: str, rom: str | None) -> tuple[str, str | None]:
@@ -108,9 +115,12 @@ def client() -> PixelcadeClient:
 # shared httpx client, which pools connections between calls.
 @asynccontextmanager
 async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
-    global _client, _marquees
+    global _client, _marquees, marquee_bucket, pulse_bucket, widget_bucket
     _client = PixelcadeClient(load_settings())
     _marquees = _Marquees()
+    marquee_bucket = bucket(MARQUEE)
+    pulse_bucket = bucket(PULSE)
+    widget_bucket = bucket(WIDGET)
     try:
         yield
     finally:
@@ -118,19 +128,12 @@ async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
         _client = None
 
 
-# Physical hardware protection:
-# - Serial/USB buffer overruns on the Pixelcade V2 board: capacity 6, rate 2.0/s
-# - Power/thermal strain from rapid high-draw LED brightness/flood/effects toggling: capacity 3, rate 0.5/s
-_SERIAL_BUCKET = TokenBucket(capacity=6.0, rate=2.0)
-_POWER_BUCKET = TokenBucket(capacity=3.0, rate=0.5)
-
-
 def reset_rate_limiters() -> None:
     """Reset rate limiting token buckets to full capacity (used in testing)."""
-    _SERIAL_BUCKET.tokens = _SERIAL_BUCKET.capacity
-    _SERIAL_BUCKET._last = _SERIAL_BUCKET.clock()
-    _POWER_BUCKET.tokens = _POWER_BUCKET.capacity
-    _POWER_BUCKET._last = _POWER_BUCKET.clock()
+    global marquee_bucket, pulse_bucket, widget_bucket
+    marquee_bucket = bucket(MARQUEE)
+    pulse_bucket = bucket(PULSE)
+    widget_bucket = bucket(WIDGET)
 
 
 mcp = MCPServer(
@@ -173,6 +176,14 @@ def _check(fn: Callable[..., T], *args: object) -> T:
         raise PixelcadeError(str(exc)) from exc
 
 
+def _throttle(b: TokenBucket, what: str) -> None:
+    """Spend one token from ``b``, or refuse the call. Called first in each tool, so no network I/O happens
+    before it. ``what`` completes "refusing to ..." in the message, e.g. "show a game's marquee"."""
+    wait = b.take()
+    if wait > 0:
+        raise PixelcadeError(refusal(what, wait))
+
+
 # --- What an action returns ---------------------------------------------------------
 # Every tool that changes something returns an ActionResult, the same shape as the
 # sibling servers' (Shield, Onkyo, Batocera...): structured, so a client can read
@@ -202,29 +213,11 @@ def _result(detail: str, sent: list[str], outcome: Outcome = "done") -> ActionRe
     )
 
 
-async def _send(segments: list[str], query: Query, detail: str, power_heavy: bool = False) -> ActionResult:
-    """The one place an action reaches pixelweb: enforces serial & power rate limits,
-    honors dry run, then appends pixelweb's reply if it's short."""
+async def _send(segments: list[str], query: Query, detail: str) -> ActionResult:
+    """The one place an action reaches pixelweb: honors dry run, then appends pixelweb's reply if it's short."""
     sent = [f"GET {build_path(segments, query)}"]
     if client().settings.dry_run:
         return _result(detail, sent, "dry_run")
-    wait_serial = _SERIAL_BUCKET.take(1.0)
-    if wait_serial > 0.0:
-        device_name = client().settings.name or client().settings.url
-        msg = (
-            f"{refusal('send Pixelcade command', wait_serial, device_name)}. "
-            "throttled to protect the V2 board USB serial queue from buffer overruns."
-        )
-        raise PixelcadeError(msg)
-    if power_heavy:
-        wait_power = _POWER_BUCKET.take(1.0)
-        if wait_power > 0.0:
-            device_name = client().settings.name or client().settings.url
-            msg = (
-                f"{refusal('send high-draw Pulse LED command', wait_power, device_name)}. "
-                "throttled to protect power supply and prevent thermal strain."
-            )
-            raise PixelcadeError(msg)
     reply = (await client().get(segments, query)).strip()
     if reply and len(reply) <= 200 and "\n" not in reply:
         detail = f"{detail} (pixelweb: {reply})"
@@ -429,6 +422,7 @@ async def pixelcade_show_game_marquee(
     - If the game has no artwork, fallback_text or the default marquee is displayed.
     </important_notes>
     """
+    _throttle(marquee_bucket, "show a game's marquee")
     s = _check(cfg.path_segment, system, "system", 60)
     r = _check(cfg.path_segment, rom, "rom")
     query: list[tuple[str, str | int | None]] = []
@@ -457,22 +451,14 @@ async def pixelcade_show_console_marquee(system: System, fallback_text: Fallback
     - If artwork is missing, optional fallback_text will scroll.
     </important_notes>
     """
+    _throttle(marquee_bucket, "show a system marquee")
     s = _check(cfg.path_segment, system, "system", 60)
     query: Query = [("t", _check(_one_line, fallback_text))] if fallback_text else []
     return await _show_marquee(s, None, ["console", "stream", s], query, f"Showing the {s} system marquee")
 
 
-@mcp.tool(title="Restore the frontend's marquee", annotations=ACT_IDEMPOTENT)
-async def pixelcade_show_current_game() -> ActionResult:
-    """<use_case>
-    Restore the marquee artwork corresponding to the game or system currently selected in the frontend.
-    </use_case>
-
-    <important_notes>
-    - Useful after displaying temporary custom text or alerts to return the marquee to cabinet context.
-    - If attract mode or screensaver was active, restores the last game known before screensaver.
-    </important_notes>
-    """
+async def _restore_frontend() -> ActionResult:
+    """show_current_game without the rate limit, so clear_queue can restore the marquee as part of its one action."""
     cur = await _current()
     # Shown after our last marquee means the frontend (or the screensaver) moved on: use that.
     newer = cur is not None and _key(cur["system"], cur["rom"]) != _marquees.ours
@@ -498,6 +484,63 @@ async def pixelcade_show_current_game() -> ActionResult:
     return result
 
 
+@mcp.tool(title="Restore the frontend's marquee", annotations=ACT_IDEMPOTENT)
+async def pixelcade_show_current_game() -> ActionResult:
+    """<use_case>
+    Restore the marquee artwork corresponding to the game or system currently selected in the frontend.
+    </use_case>
+
+    <important_notes>
+    - Useful after displaying temporary custom text or alerts to return the marquee to cabinet context.
+    - If attract mode or screensaver was active, restores the last game known before screensaver.
+    </important_notes>
+    """
+    _throttle(marquee_bucket, "restore the frontend's marquee")
+    return await _restore_frontend()
+
+
+@mcp.tool(title="Clear queue", annotations=ACT_IDEMPOTENT)
+async def pixelcade_clear_queue(
+    restore_current: Annotated[
+        bool,
+        Field(
+            description="Afterwards, put back the frontend's marquee (the default). False leaves the marquee "
+            "as the queue clear left it."
+        ),
+    ] = True,
+) -> ActionResult:
+    """<use_case>
+    Clear the marquee queue: stop queued items that are playing and drop pending queue items.
+    </use_case>
+
+    <important_notes>
+    - Uses attract stop command, so also halts active widgets or attract-mode locks.
+    - If restore_current is True (default), restores the frontend's active game/system marquee.
+    </important_notes>
+    """
+    _throttle(marquee_bucket, "clear the queue")
+    first = await _send(["attract", "stop"], [], "Cleared the queue")
+    if not restore_current:
+        return first
+    try:
+        second = await _restore_frontend()
+    except PixelcadeError as exc:
+        return ActionResult(
+            pixelcade=first["pixelcade"],
+            outcome=first["outcome"],
+            detail=first["detail"],
+            sent=first["sent"],
+            warnings=first["warnings"] + [str(exc)],
+        )
+    return ActionResult(
+        pixelcade=first["pixelcade"],
+        outcome=first["outcome"],
+        detail=f"{first['detail']}; {second['detail']}",
+        sent=first["sent"] + second["sent"],
+        warnings=first["warnings"] + second["warnings"],
+    )
+
+
 @mcp.tool(title="Show the default marquee", annotations=ACT_IDEMPOTENT)
 async def pixelcade_show_default_marquee() -> ActionResult:
     """<use_case>
@@ -509,6 +552,7 @@ async def pixelcade_show_default_marquee() -> ActionResult:
     - Used when no game is active or to clear custom text.
     </important_notes>
     """
+    _throttle(marquee_bucket, "show the default marquee")
     try:
         return await _send(["defaultmarquee"], [], "Showing the default marquee")
     except PixelcadeError as exc:
@@ -586,6 +630,8 @@ async def pixelcade_show_text(
     - loops=-1 holds the text on screen until the next command is sent.
     </important_notes>
     """
+    # Once for the whole call: with loops=-1, _hold sends twice, but that is still one action (one token).
+    _throttle(marquee_bucket, "show text on the marquee")
     t = _check(_marquee_text, text)
     if not t.replace("\\n", "").strip():
         raise PixelcadeError("The text is blank.")
@@ -649,6 +695,7 @@ async def pixelcade_play_animation(
     - loops sets how many times the animation plays before completing.
     </important_notes>
     """
+    _throttle(marquee_bucket, "play an animation")
     n = _check(cfg.path_segment, name, "animation name", 100)
     query: Query = [("l", loops)] if loops else []
     return await _send(["animations", "stream", n], query, f"Playing animation {n}")
@@ -695,6 +742,7 @@ async def pixelcade_show_widget(
     - lock=True prevents frontend scrolling from interrupting the widget until stopped.
     </important_notes>
     """
+    _throttle(widget_bucket, "show a widget")
     extras = {"location": location, "tickers": tickers, "league": league, "teams": teams}
     allowed = {"weather": {"location"}, "stocks": {"tickers"}, "sports": {"league", "teams"}}.get(widget, set())
     stray = sorted(k for k, v in extras.items() if v is not None and k not in allowed)
@@ -735,6 +783,7 @@ async def pixelcade_stop_widgets() -> ActionResult:
     - Call this first if marquee commands appear to be ignored.
     </important_notes>
     """
+    _throttle(widget_bucket, "stop widgets")
     return await _send(["attract", "stop"], [], "Stopped widgets")
 
 
@@ -749,6 +798,7 @@ async def pixelcade_blank_display() -> ActionResult:
     - Does not affect Pulse LED strips (use pixelcade_pulse_clear for lighting).
     </important_notes>
     """
+    _throttle(marquee_bucket, "blank the marquee")
     return await _show_marquee("black", "dummy", ["arcade", "stream", "black", "dummy"], [], "The marquee is blank")
 
 
@@ -801,6 +851,7 @@ async def pixelcade_pulse_effect(
     - Discover valid effect names with pixelcade_list_pulse_effects.
     </important_notes>
     """
+    _throttle(pulse_bucket, "run a Pulse effect")
     z = _check(cfg.zone_id, zone)
     e = _check(cfg.effect_name, effect)
     query: list[tuple[str, str | int | None]] = []
@@ -819,7 +870,7 @@ async def pixelcade_pulse_effect(
         query.append(("duration", duration_s))
     if reverse:
         query.append(("reverse", "true"))
-    return await _send(["ledstrip", "zone", z, "effect", e], query, f"Running {e} on {z}", power_heavy=True)
+    return await _send(["ledstrip", "zone", z, "effect", e], query, f"Running {e} on {z}")
 
 
 @mcp.tool(title="Fill a Pulse zone with a color", annotations=ACT_IDEMPOTENT)
@@ -836,11 +887,10 @@ async def pixelcade_pulse_fill(
     - Rate limited to protect power supply from high-draw current surges.
     </important_notes>
     """
+    _throttle(pulse_bucket, "fill a Pulse zone")
     z = _check(cfg.zone_id, zone)
     r, g, b = _check(cfg.rgb, color)
-    return await _send(
-        ["ledstrip", "zone", z, "flood"], [("r", r), ("g", g), ("b", b)], f"Filled {z}", power_heavy=True
-    )
+    return await _send(["ledstrip", "zone", z, "flood"], [("r", r), ("g", g), ("b", b)], f"Filled {z}")
 
 
 @mcp.tool(title="Turn Pulse LEDs off", annotations=ACT_IDEMPOTENT)
@@ -855,6 +905,7 @@ async def pixelcade_pulse_clear(
     - Omit zone parameter to turn off all Pulse lighting strips, rings, and matrices simultaneously.
     </important_notes>
     """
+    _throttle(pulse_bucket, "turn off Pulse LEDs")
     if zone is None:
         return await _send(["ledstrip", "clear"], [], "All Pulse LEDs are off")
     z = _check(cfg.zone_id, zone)
@@ -874,5 +925,26 @@ async def pixelcade_set_pulse_brightness(
     - Rate limited to protect power supplies against rapid power cycling.
     </important_notes>
     """
+    _throttle(pulse_bucket, "set Pulse brightness")
     _within_cap(level, "Brightness")
-    return await _send(["ledstrip", "brightness", str(level)], [], f"Pulse brightness set to {level}", power_heavy=True)
+    return await _send(["ledstrip", "brightness", str(level)], [], f"Pulse brightness set to {level}")
+
+
+# Shorthand aliases for backwards compatibility and tests
+get_status = pixelcade_get_status
+list_artwork = pixelcade_list_artwork
+list_pulse_effects = pixelcade_list_pulse_effects
+show_game_marquee = pixelcade_show_game_marquee
+show_console_marquee = pixelcade_show_console_marquee
+show_current_game = pixelcade_show_current_game
+clear_queue = pixelcade_clear_queue
+show_default_marquee = pixelcade_show_default_marquee
+show_text = pixelcade_show_text
+play_animation = pixelcade_play_animation
+show_widget = pixelcade_show_widget
+stop_widgets = pixelcade_stop_widgets
+blank_display = pixelcade_blank_display
+pulse_effect = pixelcade_pulse_effect
+pulse_fill = pixelcade_pulse_fill
+pulse_clear = pixelcade_pulse_clear
+set_pulse_brightness = pixelcade_set_pulse_brightness
