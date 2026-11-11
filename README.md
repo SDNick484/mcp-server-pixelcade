@@ -7,7 +7,7 @@ widgets, and drive Pulse lighting effects.
 
 > **Status: early, tested on hardware except Pulse.** On a real V2 board (pixelweb 8.0.17, Batocera 43)
 > every marquee, text, widget and frontend tool has been checked, plus dry run; Pulse waits for strips. See
-> [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) and the [verification table](#verification-status).
+> [HARDWARE_VALIDATION.md](https://github.com/SDNick484/mcp-server-pixelcade/blob/main/HARDWARE_VALIDATION.md) and the [verification table](#verification-status).
 
 This is not an official Pixelcade project.
 
@@ -28,10 +28,16 @@ MCP client ──stdio──▶ mcp-server-pixelcade ──HTTP :8080──▶ p
 ## Install
 
 ```sh
-git clone https://github.com/SDNick484/mcp-server-pixelcade.git
-cd mcp-server-pixelcade
+python -m venv ~/.venvs/pixelcade && . ~/.venvs/pixelcade/bin/activate
+pip install mcp-server-pixelcade
+```
+
+From source instead (for the newest code, or to run the tests):
+
+```sh
+git clone https://github.com/SDNick484/mcp-server-pixelcade.git && cd mcp-server-pixelcade
 python -m venv .venv && . .venv/bin/activate
-pip install -e .
+pip install -e ".[dev]" && pytest
 ```
 
 Requires Python 3.11+. Then check that pixelweb answers:
@@ -41,7 +47,7 @@ PIXELCADE_URL=192.168.1.20 mcp-server-pixelcade doctor
 ```
 
 `doctor` checks each layer (TCP, `/info`, the frontend's current game, Pulse) and, when one fails, says
-what to try and which [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) step covers it. It changes nothing
+what to try and which [HARDWARE_VALIDATION.md](https://github.com/SDNick484/mcp-server-pixelcade/blob/main/HARDWARE_VALIDATION.md) step covers it. It changes nothing
 on the marquee. It ends with the [assumptions](#verification-status) that hardware contradicted (listed; the code
 no longer relies on them) and a count of those not yet confirmed; `doctor --verbose` lists those too, and
 `doctor --json` always includes both lists.
@@ -233,7 +239,7 @@ Every tool that changes the display returns the same structured result as the si
 
 Every pixelweb behavior the code relies on is listed in `src/pixelcade_mcp/assumptions.py`, with its
 source and how sure we are; the code cites each id where it depends on it, and
-[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) has the step that confirms it. *high* means documented
+[HARDWARE_VALIDATION.md](https://github.com/SDNick484/mcp-server-pixelcade/blob/main/HARDWARE_VALIDATION.md) has the step that confirms it. *high* means documented
 and used the same way by Pixelcade's own scripts; *medium* means documented only; *low* means our own
 guess. Hardware results so far are from pixelweb 8.0.17 on a V2 board (2026-10-22).
 
@@ -278,4 +284,4 @@ path, so the exact percent-encoding on the wire is asserted. To poke at the tool
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/SDNick484/mcp-server-pixelcade/blob/main/LICENSE).
