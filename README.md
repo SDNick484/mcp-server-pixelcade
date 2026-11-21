@@ -103,10 +103,14 @@ is `remote.py`, shared byte for byte with the sibling servers through
 | `--public-host` | `MCP_PUBLIC_HOSTS` | none: only loopback Host headers pass |
 | | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | none: serves only this machine |
 | | `MCP_ALLOWED_EMAILS` | anyone Access lets in |
+| | `MCP_ALLOWED_SERVICE_TOKENS` | none: a service token is refused (403) unless its client ID is listed |
+| | `MCP_AUTOMATION_TIERS` | `read,power-off`: what a listed service token may call (may add `everyday`, never `costly`) |
 
 With Access configured, every request needs a valid Access assertion, checked here: signature (Access's
 published keys), the application's audience tag, issuer, expiry, and the email allow-list if set; anything
-else gets a plain 403. Without Access it serves only the machine it runs on: it won't listen on anything
+else gets a plain 403. A Cloudflare Access service token (a job, not a person) is refused unless its client ID
+is in `MCP_ALLOWED_SERVICE_TOKENS`; once admitted it may only call the tiers in `MCP_AUTOMATION_TIERS`
+([What each caller may do](#what-each-caller-may-do)). Without Access it serves only the machine it runs on: it won't listen on anything
 but loopback, won't start with a `--public-host`, and answers 403 to anything a tunnel or proxy forwarded
 (`--insecure-no-auth` turns that off for a short trusted-LAN test; don't run the service with it).
 
@@ -180,6 +184,15 @@ All tools use the `pixelcade_` prefix to eliminate namespace collisions with sib
 | `pixelcade_pulse_clear`          | Turn off one zone, or all LEDs                                                                 |
 | `pixelcade_set_pulse_brightness` | Overall Pulse brightness, up to the server's cap                                               |
 
+**Costly tools.** None is costly; no tool asks for confirmation. Every tool still has an authorization
+tier: three are `read` (`pixelcade_get_status`, `pixelcade_list_artwork`, `pixelcade_list_pulse_effects`),
+two are `power-off` (`pixelcade_blank_display`, `pixelcade_pulse_clear`) and the rest are `everyday`. A
+person may call all of them; an automated caller (a Cloudflare Access service token) gets `read` and
+`power-off` unless `MCP_AUTOMATION_TIERS` says otherwise ([Service and Cloudflare](#service-and-cloudflare)).
+A costly tool would ask the person for a yes in a prompt the model can't answer, and refuse where the app
+can't show it; this server has nothing a display change can't undo, and the endpoints that would qualify
+(`/arcade/write`, `/settings`, `/update/*`, `/reboot`) aren't reachable.
+
 **The frontend drives the marquee too.** EmulationStation's Pixelcade hooks call pixelweb whenever you
 scroll to a system or game, and every game launch calls `/attract/stop`. So whatever the model shows
 lasts until the next frontend event. `show_current_game` restores the frontend's marquee, and
@@ -229,6 +242,9 @@ Every tool that changes the display returns the same structured result as the si
 - **Pixelweb has no authentication**, so anything on your LAN can already call every endpoint. Keep port
   8080 off the internet. Over HTTP, this server is the gate: Access assertions are checked on every
   request, and without Access it serves only its own machine ([Service and Cloudflare](#service-and-cloudflare)).
+- **Per-tool authorization.** Every tool has a tier (`read`, `power-off`, `everyday` or `costly`), and an
+  automated caller may only use the tiers in `MCP_AUTOMATION_TIERS` (default `read,power-off`). Nothing here
+  is `costly`. See [Tools](#tools).
 - Tools carry titles and MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`,
   `openWorldHint`). Nothing is marked destructive: every display change is undone by the next one.
 - Structured XML docstrings (`<use_case>` and `<important_notes>`) guide models on tool preconditions, display lifetimes, and routing.

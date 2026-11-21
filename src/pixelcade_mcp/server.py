@@ -49,6 +49,7 @@ from .effects import EFFECTS, PATTERNS, EffectCategory
 from .limits import MARQUEE, PULSE, WIDGET, bucket
 from .lookup import unknown_with_suggestions
 from .ratelimit import TokenBucket, refusal
+from .remote import request_state_security, tier
 from .tools import ACT, ACT_IDEMPOTENT, READ_ONLY
 
 log = logging.getLogger(__name__)
@@ -156,6 +157,7 @@ mcp = MCPServer(
         "- While screensavers or locked widgets run (lock=True), call pixelcade_stop_widgets to release attract mode."
     ),
     lifespan=lifespan,
+    request_state_security=request_state_security(),
 )
 
 # Annotations are hints clients use to decide what needs confirmation. Nothing
@@ -226,6 +228,7 @@ async def _send(segments: list[str], query: Query, detail: str) -> ActionResult:
 
 # --- Reading ---------------------------------------------------------------
 @mcp.tool(title="Get Pixelcade status", annotations=READ_ONLY)
+@tier("read")
 async def pixelcade_get_status() -> Status:
     """<use_case>
     Report whether the Pixelcade marquee and Pulse lighting controller are reachable,
@@ -251,6 +254,7 @@ class ArtworkList(TypedDict):
 
 
 @mcp.tool(title="List marquee artwork", annotations=READ_ONLY)
+@tier("read")
 async def pixelcade_list_artwork(
     folder: Annotated[
         str,
@@ -338,6 +342,7 @@ class EffectCatalog(TypedDict):
 
 
 @mcp.tool(title="List Pulse effects", annotations=READ_ONLY)
+@tier("read")
 def pixelcade_list_pulse_effects(
     category: Annotated[EffectCategory | None, Field(description="Only this category; omit for all.")] = None,
 ) -> EffectCatalog:
@@ -385,6 +390,7 @@ def _pulse_flags(pulse: str) -> Query:
 
 
 @mcp.tool(title="Show a game marquee", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_show_game_marquee(
     system: System,
     rom: Rom,
@@ -441,6 +447,7 @@ async def pixelcade_show_game_marquee(
 
 
 @mcp.tool(title="Show a system marquee", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_show_console_marquee(system: System, fallback_text: FallbackText = None) -> ActionResult:
     """<use_case>
     Display a console or system banner marquee (e.g., 'snes', 'genesis', 'mame').
@@ -485,6 +492,7 @@ async def _restore_frontend() -> ActionResult:
 
 
 @mcp.tool(title="Restore the frontend's marquee", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_show_current_game() -> ActionResult:
     """<use_case>
     Restore the marquee artwork corresponding to the game or system currently selected in the frontend.
@@ -500,6 +508,7 @@ async def pixelcade_show_current_game() -> ActionResult:
 
 
 @mcp.tool(title="Clear queue", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_clear_queue(
     restore_current: Annotated[
         bool,
@@ -542,6 +551,7 @@ async def pixelcade_clear_queue(
 
 
 @mcp.tool(title="Show the default marquee", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_show_default_marquee() -> ActionResult:
     """<use_case>
     Display the Pixelcade default marquee artwork (fallback artwork).
@@ -591,6 +601,7 @@ Color = Annotated[
 
 
 @mcp.tool(title="Show text on the marquee", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_show_text(
     text: Annotated[
         str, Field(min_length=1, max_length=500, description="The message. Use newlines with lines=2 or 4.")
@@ -677,6 +688,7 @@ async def _hold(segments: list[str], query: Query, detail: str) -> ActionResult:
 
 
 @mcp.tool(title="Play an animation", annotations=ACT)
+@tier("everyday")
 async def pixelcade_play_animation(
     name: Annotated[
         str, Field(min_length=1, max_length=100, description="An animation name from list_artwork folder='animations'.")
@@ -702,6 +714,7 @@ async def pixelcade_play_animation(
 
 
 @mcp.tool(title="Show a widget", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_show_widget(
     widget: Annotated[
         Literal["clock", "weather", "stocks", "sports", "attract"],
@@ -773,6 +786,7 @@ async def pixelcade_show_widget(
 
 
 @mcp.tool(title="Stop widgets", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_stop_widgets() -> ActionResult:
     """<use_case>
     Stop any running widget or attract-mode loop and restore normal arcade operation.
@@ -788,6 +802,7 @@ async def pixelcade_stop_widgets() -> ActionResult:
 
 
 @mcp.tool(title="Blank the marquee", annotations=ACT_IDEMPOTENT)
+@tier("power-off")
 async def pixelcade_blank_display() -> ActionResult:
     """<use_case>
     Turn the LED marquee display black.
@@ -826,6 +841,7 @@ def _within_cap(value: int, what: str) -> None:
 
 
 @mcp.tool(title="Run a Pulse effect", annotations=ACT)
+@tier("everyday")
 async def pixelcade_pulse_effect(
     zone: Zone,
     effect: Annotated[
@@ -874,6 +890,7 @@ async def pixelcade_pulse_effect(
 
 
 @mcp.tool(title="Fill a Pulse zone with a color", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_pulse_fill(
     zone: Zone,
     color: Annotated[str, Field(min_length=3, max_length=9, description="A color name or 6-digit hex.")],
@@ -894,6 +911,7 @@ async def pixelcade_pulse_fill(
 
 
 @mcp.tool(title="Turn Pulse LEDs off", annotations=ACT_IDEMPOTENT)
+@tier("power-off")
 async def pixelcade_pulse_clear(
     zone: Annotated[str | None, Field(default=None, max_length=20, description="One zone; omit for all LEDs.")] = None,
 ) -> ActionResult:
@@ -913,6 +931,7 @@ async def pixelcade_pulse_clear(
 
 
 @mcp.tool(title="Set Pulse brightness", annotations=ACT_IDEMPOTENT)
+@tier("everyday")
 async def pixelcade_set_pulse_brightness(
     level: Annotated[int, Field(ge=0, le=255, description="0-255, limited by the server's cap (see get_status).")],
 ) -> ActionResult:
