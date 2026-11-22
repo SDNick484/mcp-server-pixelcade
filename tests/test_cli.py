@@ -179,7 +179,9 @@ async def healthz(url_env: str) -> httpx.Response:
 
 
 @pytest.mark.anyio
-async def test_healthz_is_200_while_pixelweb_answers(env):
+async def test_healthz_is_200_while_pixelweb_answers(env, monkeypatch, tmp_path):
+    # No COMMIT file: one beside this venv (an install.sh install, as in the Alpine smoke test) would add fields
+    monkeypatch.setenv(remote.COMMIT_FILE_ENV, str(tmp_path / "absent"))
     resp = await healthz("/healthz")
     assert resp.status_code == 200 and resp.json() == {"status": "ok"}
 

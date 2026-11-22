@@ -4,6 +4,7 @@
 
 ### Added
 
+- `GET /pixelcade/mcp/healthz`, the health check under the MCP path (the only one a tunnel routing `pixelcade/*` reaches), and both health routes report the installed `commit` and `repo` from `/opt/mcp-server-pixelcade/COMMIT`, which `deploy/alpine/install.sh` now writes (pinning the default source to `main`'s current commit first). `remote.py` and the new `deploy/alpine/commit.sh` synced from mcp-server-shared a48209b; the install needs `git` (it already installed it).
 - Every tool now has an authorization tier (`read`, `power-off`, `everyday` or `costly`). None is costly here; no tool asks for confirmation. Costly tools, where a server has them, ask the person for a yes and refuse where the app can't show the prompt.
 - `MCP_ALLOWED_SERVICE_TOKENS` and `MCP_AUTOMATION_TIERS` settings (see the README).
 
