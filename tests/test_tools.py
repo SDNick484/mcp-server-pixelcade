@@ -66,7 +66,8 @@ async def test_tool_names(mcp_client):
 async def test_every_tool_has_title_description_and_annotations(mcp_client):
     for t in (await tools(mcp_client)).values():
         assert t.title and t.description, t.name
-        assert "<use_case>" in t.description and "<important_notes>" in t.description, t.name
+        # trim_tools drops the section tags the docstrings are written with: tools/list sends plain text.
+        assert "<use_case>" not in t.description and "<important_notes>" not in t.description, t.name
         a = t.annotations
         assert a is not None and a.read_only_hint is not None and a.open_world_hint is False, t.name
         if not a.read_only_hint:
@@ -83,7 +84,7 @@ async def test_schemas_constrain_arguments(mcp_client):
     t = await tools(mcp_client)
     text_props = t["pixelcade_show_text"].input_schema["properties"]
     assert set(text_props["lines"]["enum"]) == {1, 2, 4}
-    assert (text_props["text"]["maxLength"], text_props["speed"]["anyOf"][0]["maximum"]) == (500, 150)
+    assert (text_props["text"]["maxLength"], text_props["speed"]["maximum"]) == (500, 150)
     widget = t["pixelcade_show_widget"].input_schema["properties"]["widget"]
     assert set(widget["enum"]) == {"clock", "weather", "stocks", "sports", "attract"}
     level = t["pixelcade_set_pulse_brightness"].input_schema["properties"]["level"]
