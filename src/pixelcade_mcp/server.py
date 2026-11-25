@@ -50,7 +50,7 @@ from .limits import MARQUEE, PULSE, WIDGET, bucket
 from .lookup import unknown_with_suggestions
 from .ratelimit import TokenBucket, refusal
 from .remote import request_state_security, tier
-from .tools import ACT, ACT_IDEMPOTENT, READ_ONLY
+from .tools import ACT, ACT_IDEMPOTENT, READ_ONLY, trim_tools
 
 log = logging.getLogger(__name__)
 
@@ -947,6 +947,10 @@ async def pixelcade_set_pulse_brightness(
     _throttle(pulse_bucket, "set Pulse brightness")
     _within_cap(level, "Brightness")
     return await _send(["ledstrip", "brightness", str(level)], [], f"Pulse brightness set to {level}")
+
+
+# Every tool is registered by now: shorten what tools/list sends (see tools.py).
+trim_tools(mcp)
 
 
 # Shorthand aliases for backwards compatibility and tests
